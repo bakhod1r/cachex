@@ -100,6 +100,7 @@ func (s *Store) put(key string, val []byte, ttl time.Duration) {
 	s.data[key] = e
 }
 
+// Get returns a copy of the live value or cachex.ErrMiss.
 func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 	defer s.mu.Unlock()
 	if err := s.begin(ctx); err != nil {
@@ -112,6 +113,7 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 	return append([]byte{}, e.val...), nil
 }
 
+// Set stores a copy of val; ttl <= 0 means no expiry.
 func (s *Store) Set(ctx context.Context, key string, val []byte, ttl time.Duration) error {
 	defer s.mu.Unlock()
 	if err := s.begin(ctx); err != nil {
@@ -121,6 +123,7 @@ func (s *Store) Set(ctx context.Context, key string, val []byte, ttl time.Durati
 	return nil
 }
 
+// Add stores only if key is absent, else cachex.ErrNotStored.
 func (s *Store) Add(ctx context.Context, key string, val []byte, ttl time.Duration) error {
 	defer s.mu.Unlock()
 	if err := s.begin(ctx); err != nil {
@@ -133,6 +136,7 @@ func (s *Store) Add(ctx context.Context, key string, val []byte, ttl time.Durati
 	return nil
 }
 
+// Delete removes key; a missing key is not an error.
 func (s *Store) Delete(ctx context.Context, key string) error {
 	defer s.mu.Unlock()
 	if err := s.begin(ctx); err != nil {
@@ -145,6 +149,7 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 // ErrNotNumeric is returned by Incr when the stored value is not a decimal uint64.
 var ErrNotNumeric = errors.New("memstore: value is not a decimal counter")
 
+// Incr adds delta to a decimal counter, keeping its TTL.
 func (s *Store) Incr(ctx context.Context, key string, delta uint64) (uint64, error) {
 	defer s.mu.Unlock()
 	if err := s.begin(ctx); err != nil {
@@ -171,3 +176,20 @@ func (s *Store) Close() error {
 	s.closed = true
 	return nil
 }
+
+// GetMulti implements cachex.MultiGetter; absent keys are omitted.
+func (s *Store) GetMulti(ctx context.Context, keys []string) (map[string][]byte, error) {
+	defer s.mu.Unlock()
+	if err := s.begin(ctx); err != nil {
+		return nil, err
+	}
+	out := make(map[string][]byte, len(keys))
+	for _, k := range keys {
+		if e, ok := s.live(k); ok {
+			out[k] = append([]byte{}, e.val...)
+		}
+	}
+	return out, nil
+}
+
+var _ cachex.MultiGetter = (*Store)(nil)

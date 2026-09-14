@@ -29,7 +29,7 @@ func main() {
 	}()
 
 	calls := 0
-	loadUser := func(ctx context.Context) ([]byte, error) {
+	loadUser := func(_ context.Context) ([]byte, error) {
 		calls++
 		return []byte(`{"id":42,"name":"Ada"}`), nil
 	}

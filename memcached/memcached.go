@@ -100,6 +100,33 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 	return it.Value, nil
 }
 
+// GetMulti implements cachex.MultiGetter with one multi-key get per server.
+// Absent keys are omitted.
+func (s *Store) GetMulti(ctx context.Context, keys []string) (map[string][]byte, error) {
+	done, err := s.begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	wire := make([]string, len(keys))
+	back := make(map[string]string, len(keys))
+	for i, k := range keys {
+		wire[i] = normalizeKey(s.prefix, k)
+		back[wire[i]] = k
+	}
+	items, err := s.client.GetMulti(wire)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	out := make(map[string][]byte, len(items))
+	for wk, it := range items {
+		out[back[wk]] = it.Value
+	}
+	return out, nil
+}
+
+var _ cachex.MultiGetter = (*Store)(nil)
+
 // Set stores val; ttl <= 0 means no expiry.
 func (s *Store) Set(ctx context.Context, key string, val []byte, ttl time.Duration) error {
 	done, err := s.begin(ctx)

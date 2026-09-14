@@ -20,6 +20,7 @@ const entryOverhead = 64
 // Reason explains why an entry left the cache.
 type Reason uint8
 
+// Reasons passed to Options.OnEvict.
 const (
 	Capacity Reason = iota // evicted to satisfy MaxEntries/MaxBytes
 	Expired                // TTL elapsed (Get or Sweep)
@@ -39,8 +40,11 @@ type Options struct {
 // without a global lock, so they are approximately consistent.
 type Stats struct {
 	Hits, Misses, Evictions, Expirations uint64
-	Entries                              int
-	Bytes                                int64
+	// Entries is the number of stored entries, identical to Len: it includes
+	// expired entries not yet removed by Get or Sweep. Use LiveLen for a count
+	// of non-expired entries.
+	Entries int
+	Bytes   int64
 }
 
 type entry struct {
@@ -254,7 +258,8 @@ func (c *Cache) DeletePrefix(prefix string) int {
 	return total
 }
 
-// Len returns the number of stored entries, including expired-but-unswept ones.
+// Len returns the number of stored entries, including expired entries that
+// have not yet been removed by Get or Sweep. It is O(shards).
 func (c *Cache) Len() int {
 	n := 0
 	for _, s := range c.shards {
@@ -265,15 +270,42 @@ func (c *Cache) Len() int {
 	return n
 }
 
-// Purge removes all entries. OnEvict is not called.
+// Purge removes all entries. OnEvict is called with Removed for every removed
+// entry, after the shard lock is released. No counters are changed.
 func (c *Cache) Purge() {
 	for _, s := range c.shards {
+		var evs []evicted
 		s.mu.Lock()
+		if c.onEvict != nil && s.ll.Len() > 0 {
+			evs = make([]evicted, 0, s.ll.Len())
+			for el := s.ll.Front(); el != nil; el = el.Next() {
+				evs = append(evs, evicted{el.Value.(*entry).key, Removed})
+			}
+		}
 		s.items = make(map[string]*list.Element)
 		s.ll.Init()
 		s.bytes = 0
 		s.mu.Unlock()
+		c.notify(evs)
 	}
+}
+
+// LiveLen returns the number of non-expired entries. Unlike Len it scans every
+// entry: O(total entries), holding each shard lock for its scan. It does not
+// remove expired entries.
+func (c *Cache) LiveLen() int {
+	n := 0
+	for _, s := range c.shards {
+		s.mu.Lock()
+		now := c.now()
+		for el := s.ll.Front(); el != nil; el = el.Next() {
+			if e := el.Value.(*entry); e.expiresAt == 0 || now < e.expiresAt {
+				n++
+			}
+		}
+		s.mu.Unlock()
+	}
+	return n
 }
 
 // Stats returns aggregated counters.

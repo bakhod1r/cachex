@@ -10,6 +10,7 @@ import (
 	"errors"
 	"math"
 	"math/rand/v2"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -61,6 +62,12 @@ func New(opts ...Option) (*Cache, error) {
 	})
 	c.br = breaker.New(breaker.Config{Now: cfg.clock.Now})
 	c.baseCtx, c.cancel = context.WithCancel(context.Background())
+	if cfg.invalidator != nil {
+		if err := cfg.invalidator.Subscribe(c.baseCtx, c.onInvalidation); err != nil {
+			c.cancel()
+			return nil, err
+		}
+	}
 	if cfg.sweepInterval > 0 {
 		c.wg.Add(1)
 		go c.janitor()
@@ -116,7 +123,121 @@ func (c *Cache) Delete(ctx context.Context, key string) error {
 		err = c.l2Call(func() error { return c.l2.Delete(ctx, key) })
 	}
 	c.l1.Delete(key) // closes the race with a concurrent backfill from L2
+	c.publish(ctx, Invalidation{Keys: []string{key}})
 	return err
+}
+
+// GetMulti returns the cached values that are present; missing keys are simply absent.
+// L1 answers first; the rest go to L2 in one round trip when the store implements MultiGetter.
+func (c *Cache) GetMulti(ctx context.Context, keys []string) (map[string][]byte, error) {
+	if c.closed.Load() {
+		return nil, ErrClosed
+	}
+	out := make(map[string][]byte, len(keys))
+	var rest []string
+	now := c.nowNs()
+	for _, k := range keys {
+		if k == "" || strings.HasPrefix(k, reservedPrefix) {
+			return nil, ErrInvalidKey
+		}
+		if raw, ok := c.l1.Get(k); ok {
+			if e, err := envelope.Decode(raw); err == nil {
+				c.st.l1Hits.Add(1)
+				if e.Flags&envelope.FlagTombstone == 0 && !e.Expired(now) {
+					out[k] = clone(e.Value)
+				}
+				continue
+			}
+		}
+		c.st.l1Misses.Add(1)
+		rest = append(rest, k)
+	}
+	if len(rest) == 0 || c.l2 == nil {
+		return out, nil
+	}
+	mg, ok := c.l2.(MultiGetter)
+	if !ok {
+		for _, k := range rest {
+			if v, err := c.getL2Only(ctx, k); err == nil {
+				out[k] = v
+			}
+		}
+		return out, nil
+	}
+	var found map[string][]byte
+	if err := c.l2Call(func() error {
+		var err error
+		found, err = mg.GetMulti(ctx, rest)
+		return err
+	}); err != nil {
+		return out, nil // degraded: L1 answers only
+	}
+	for _, k := range rest {
+		raw, ok := found[k]
+		if !ok {
+			c.st.l2Misses.Add(1)
+			continue
+		}
+		if v, ok := c.accept(k, raw, now); ok {
+			out[k] = v
+		}
+	}
+	return out, nil
+}
+
+func (c *Cache) getL2Only(ctx context.Context, key string) ([]byte, error) {
+	var raw []byte
+	if err := c.l2Call(func() error {
+		var err error
+		raw, err = c.l2.Get(ctx, key)
+		return err
+	}); err != nil {
+		if errors.Is(err, ErrMiss) {
+			c.st.l2Misses.Add(1)
+		}
+		return nil, err
+	}
+	if v, ok := c.accept(key, raw, c.nowNs()); ok {
+		return v, nil
+	}
+	return nil, ErrMiss
+}
+
+// accept decodes an L2 value, backfills L1 and returns a live value.
+func (c *Cache) accept(key string, raw []byte, now int64) ([]byte, bool) {
+	e, err := envelope.Decode(raw)
+	if err != nil {
+		c.st.decodeErrors.Add(1)
+		return nil, false
+	}
+	c.st.l2Hits.Add(1)
+	if hold := c.l1Hold(e, now); hold > 0 {
+		c.l1.Set(key, raw, hold)
+	}
+	if e.Flags&envelope.FlagTombstone != 0 || e.Expired(now) {
+		return nil, false
+	}
+	return clone(e.Value), true
+}
+
+func (c *Cache) publish(ctx context.Context, msg Invalidation) {
+	if c.cfg.invalidator == nil {
+		return
+	}
+	if err := c.cfg.invalidator.Publish(context.WithoutCancel(ctx), msg); err != nil {
+		c.st.publishErrors.Add(1)
+	}
+}
+
+// onInvalidation applies a message from another process to this process's L1.
+func (c *Cache) onInvalidation(msg Invalidation) {
+	for _, k := range msg.Keys {
+		c.l1.Delete(k)
+	}
+	if msg.Namespace != "" {
+		c.vers.forget(msg.Namespace)
+		c.l1.DeletePrefix(msg.Namespace + ":")
+	}
 }
 
 // GetOrLoad returns the cached value or computes it with load, once per key per process.
@@ -131,8 +252,13 @@ func (c *Cache) GetOrLoad(ctx context.Context, key string, ttl time.Duration, lo
 	}
 	ttl = c.ttl(ttl)
 	now := c.nowNs()
-	if e, ok := c.lookup(ctx, key); ok && e.Flags&envelope.FlagTombstone == 0 {
+	if e, ok := c.lookup(ctx, key); ok {
 		switch {
+		case e.Flags&envelope.FlagTombstone != 0:
+			if !e.Expired(now) {
+				c.st.negativeHits.Add(1)
+				return nil, ErrNotFound
+			}
 		case !e.Expired(now):
 			if c.earlyRefresh(e, now) {
 				c.st.earlyRefreshes.Add(1)
@@ -147,8 +273,15 @@ func (c *Cache) GetOrLoad(ctx context.Context, key string, ttl time.Duration, lo
 	}
 	v, shared, err := c.flights.Do(ctx, key, func(fctx context.Context) ([]byte, error) {
 		// A flight that finished between our miss and this call may have filled the cache.
-		if e, ok := c.lookup(fctx, key); ok && e.Flags&envelope.FlagTombstone == 0 && !e.Expired(c.nowNs()) {
-			return e.Value, nil
+		if v, ok, err := c.fresh(fctx, key); ok {
+			return v, err
+		}
+		unlock, cached := c.acquireLoadLock(fctx, key)
+		defer unlock()
+		if cached {
+			if v, ok, err := c.fresh(fctx, key); ok {
+				return v, err
+			}
 		}
 		return c.load(fctx, key, ttl, load)
 	})
@@ -167,6 +300,10 @@ func (c *Cache) load(ctx context.Context, key string, ttl time.Duration, load Lo
 	start := c.cfg.clock.Now()
 	v, err := load(ctx)
 	c.st.loads.Add(1)
+	if errors.Is(err, ErrNotFound) && c.cfg.negativeTTL > 0 {
+		c.store(ctx, key, envelope.Entry{Flags: envelope.FlagTombstone}, c.cfg.negativeTTL)
+		return nil, err
+	}
 	if err != nil {
 		c.st.loadErrors.Add(1)
 		return nil, err
@@ -174,6 +311,54 @@ func (c *Cache) load(ctx context.Context, key string, ttl time.Duration, load Lo
 	delta := c.cfg.clock.Now().Sub(start)
 	c.store(ctx, key, envelope.Entry{Value: v, Delta: int64(delta)}, ttl)
 	return v, nil
+}
+
+// fresh reports a live cached answer: a value, or ErrNotFound for a live tombstone.
+func (c *Cache) fresh(ctx context.Context, key string) ([]byte, bool, error) {
+	e, ok := c.lookup(ctx, key)
+	if !ok || e.Expired(c.nowNs()) {
+		return nil, false, nil
+	}
+	if e.Flags&envelope.FlagTombstone != 0 {
+		c.st.negativeHits.Add(1)
+		return nil, true, ErrNotFound
+	}
+	return e.Value, true, nil
+}
+
+// acquireLoadLock takes a cross-process lock in L2 (memcached add) so only one node runs the
+// loader. Losers poll the cache until the lock TTL; cached reports that a poll found a value
+// or the wait ended, so the caller should re-check before loading. Any L2 problem fails open.
+func (c *Cache) acquireLoadLock(ctx context.Context, key string) (unlock func(), cached bool) {
+	noop := func() {}
+	if c.l2 == nil || c.cfg.lockTTL <= 0 {
+		return noop, false
+	}
+	lk := lockPrefix + key
+	err := c.l2Call(func() error { return c.l2.Add(ctx, lk, []byte{1}, c.cfg.lockTTL) })
+	if err == nil {
+		return func() { _ = c.l2Call(func() error { return c.l2.Delete(context.WithoutCancel(ctx), lk) }) }, false
+	}
+	if !errors.Is(err, ErrNotStored) {
+		return noop, false
+	}
+	c.st.lockWaits.Add(1)
+	deadline := time.NewTimer(c.cfg.lockTTL)
+	defer deadline.Stop()
+	tick := time.NewTicker(c.cfg.lockPoll)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return noop, true
+		case <-deadline.C:
+			return noop, true
+		case <-tick.C:
+			if _, ok, _ := c.fresh(ctx, key); ok {
+				return noop, true
+			}
+		}
+	}
 }
 
 func (c *Cache) refreshAsync(key string, ttl time.Duration, load Loader) {
@@ -304,7 +489,7 @@ func (c *Cache) check(key string) error {
 	if c.closed.Load() {
 		return ErrClosed
 	}
-	if key == "" {
+	if key == "" || strings.HasPrefix(key, reservedPrefix) {
 		return ErrInvalidKey
 	}
 	return nil

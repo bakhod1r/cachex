@@ -14,7 +14,37 @@ var (
 	ErrClosed        = errors.New("cachex: closed")
 	ErrInvalidKey    = errors.New("cachex: invalid key")
 	ErrValueTooLarge = errors.New("cachex: value too large")
+	// ErrNotFound is returned by a Loader when the source has no such record. With
+	// WithNegativeTTL the absence is cached and GetOrLoad returns ErrNotFound without loading.
+	ErrNotFound = errors.New("cachex: not found")
 )
+
+// reservedPrefix marks internal keys (namespace versions, load locks); user keys may not use it.
+const (
+	reservedPrefix = "cachex:"
+	lockPrefix     = reservedPrefix + "lock:"
+)
+
+// MultiGetter is an optional Store capability used by Cache.GetMulti for one round trip.
+// The result holds only keys that were found.
+type MultiGetter interface {
+	GetMulti(ctx context.Context, keys []string) (map[string][]byte, error)
+}
+
+// Invalidation tells other processes to drop L1 copies.
+type Invalidation struct {
+	Keys      []string // single keys removed with Delete
+	Namespace string   // namespace bumped with Invalidate
+}
+
+// Invalidator broadcasts invalidations between processes (Redis pub/sub, NATS, ...), making
+// cross-node L1 staleness sub-second instead of bounded by the L1 TTL. Delivery is best effort;
+// the TTL bounds still hold for lost messages.
+type Invalidator interface {
+	Publish(ctx context.Context, msg Invalidation) error
+	// Subscribe registers fn and returns; the implementation delivers until ctx is done.
+	Subscribe(ctx context.Context, fn func(Invalidation)) error
+}
 
 // Store is the shared L2 tier (memcached in production, an in-memory fake in tests).
 // Values are opaque encoded envelopes. Implementations must be safe for concurrent use.

@@ -13,9 +13,19 @@ import (
 )
 
 // Run exercises any cachex.Store. newStore returns a fresh empty store.
-// advance moves the store's clock forward (may be nil: TTL subtests are skipped).
+// advance moves the store's clock forward. Pass nil for stores on real time (memcached):
+// TTL subtests then sleep for real and are skipped under -short.
 func Run(t *testing.T, newStore func(t *testing.T) cachex.Store, advance func(d time.Duration)) {
 	t.Helper()
+	realTime := advance == nil
+	if realTime {
+		advance = time.Sleep
+	}
+	skipSlow := func(t *testing.T) {
+		if realTime && testing.Short() {
+			t.Skip("real-time TTL test skipped in -short mode")
+		}
+	}
 	ctx := context.Background()
 	fresh := func(t *testing.T) cachex.Store {
 		s := newStore(t)
@@ -95,9 +105,7 @@ func Run(t *testing.T, newStore func(t *testing.T) cachex.Store, advance func(d 
 	})
 
 	t.Run("TTLExpiry", func(t *testing.T) {
-		if advance == nil {
-			t.Skip("no clock advance func")
-		}
+		skipSlow(t)
 		s := fresh(t)
 		mustSet(t, s, "k", "v", 2*time.Second)
 		expectVal(t, s, "k", "v")
@@ -108,15 +116,34 @@ func Run(t *testing.T, newStore func(t *testing.T) cachex.Store, advance func(d 
 	})
 
 	t.Run("NoExpiryForNonPositiveTTL", func(t *testing.T) {
-		if advance == nil {
-			t.Skip("no clock advance func")
-		}
+		skipSlow(t)
 		s := fresh(t)
 		mustSet(t, s, "zero", "v", 0)
 		mustSet(t, s, "neg", "v", -time.Second)
-		advance(24 * time.Hour)
+		if realTime {
+			advance(3 * time.Second)
+		} else {
+			advance(24 * time.Hour)
+		}
 		expectVal(t, s, "zero", "v")
 		expectVal(t, s, "neg", "v")
+	})
+
+	t.Run("GetMulti", func(t *testing.T) {
+		s := fresh(t)
+		mg, ok := s.(cachex.MultiGetter)
+		if !ok {
+			t.Skip("store does not implement cachex.MultiGetter")
+		}
+		mustSet(t, s, "a", "1", 0)
+		mustSet(t, s, "b", "2", 0)
+		got, err := mg.GetMulti(ctx, []string{"a", "b", "missing"})
+		if err != nil {
+			t.Fatalf("GetMulti: %v", err)
+		}
+		if len(got) != 2 || string(got["a"]) != "1" || string(got["b"]) != "2" {
+			t.Fatalf("GetMulti = %q; want a=1 b=2 only", got)
+		}
 	})
 
 	t.Run("ConcurrentSetGet", func(t *testing.T) {
@@ -131,11 +158,11 @@ func Run(t *testing.T, newStore func(t *testing.T) cachex.Store, advance func(d 
 				key := fmt.Sprintf("k%d", i%5)
 				want := fmt.Sprintf("v%d", i)
 				if err := s.Set(ctx, key, []byte(want), 0); err != nil {
-					errs <- fmt.Errorf("Set %s: %w", key, err)
+					errs <- fmt.Errorf("set %s: %w", key, err)
 					return
 				}
 				if _, err := s.Get(ctx, key); err != nil {
-					errs <- fmt.Errorf("Get %s: %w", key, err)
+					errs <- fmt.Errorf("get %s: %w", key, err)
 				}
 			}(i)
 		}

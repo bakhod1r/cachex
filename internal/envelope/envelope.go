@@ -21,6 +21,7 @@ import (
 	"time"
 )
 
+// Header size and flag bits.
 const (
 	HeaderSize          = 32
 	FlagTombstone uint8 = 1
@@ -29,6 +30,7 @@ const (
 	version = 0x01
 )
 
+// Decode errors.
 var (
 	ErrCorrupt = errors.New("envelope: corrupt")
 	ErrVersion = errors.New("envelope: unsupported version")

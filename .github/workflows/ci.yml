@@ -52,4 +52,31 @@ jobs:
           go-version: "1.25"
       - uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          version: v2.4.0
+
+  prometheus:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: prometheus
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: test
+        run: go test -race -count=1 ./...
+
+  bench-vet:
+    # bench is a separate module (extra deps); vet only, never run in CI.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bench
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: vet
+        run: go vet ./...

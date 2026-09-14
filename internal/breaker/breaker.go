@@ -10,6 +10,7 @@ import (
 // State of the breaker.
 type State uint8
 
+// Breaker states.
 const (
 	Closed State = iota
 	Open

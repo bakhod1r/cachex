@@ -51,11 +51,12 @@ func (n *Namespace) Get(ctx context.Context, key string) ([]byte, error) {
 	return n.c.Get(ctx, k)
 }
 
-// Set writes key in the namespace. Skipped silently when the version is unknown.
+// Set writes key in the namespace. When the version can't be read (L2 down and never
+// fetched) nothing is written and the error is returned.
 func (n *Namespace) Set(ctx context.Context, key string, val []byte, ttl time.Duration) error {
 	k, err := n.key(ctx, key)
 	if err != nil {
-		return nil
+		return err
 	}
 	return n.c.Set(ctx, k, val, ttl)
 }
@@ -107,7 +108,13 @@ func (n *Namespace) Invalidate(ctx context.Context) error {
 		}
 	}
 	c.vers.put(n.name, next, c.cfg.clock.Now())
-	c.l1.DeletePrefix(n.name + ":")
+	c.publish(ctx, Invalidation{Namespace: n.name})
+	// Old keys are already unreachable; freeing their memory scans L1, so do it off the caller.
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		c.l1.DeletePrefix(n.name + ":")
+	}()
 	return nil
 }
 
@@ -193,6 +200,12 @@ func (vs *versions) get(ns string) (versionEntry, bool) {
 	defer vs.mu.Unlock()
 	e, ok := vs.m[ns]
 	return e, ok
+}
+
+func (vs *versions) forget(ns string) {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+	delete(vs.m, ns)
 }
 
 func (vs *versions) put(ns string, v uint64, at time.Time) {

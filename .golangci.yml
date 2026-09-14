@@ -1,0 +1,19 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - revive
+    - misspell
+    - unconvert
+    - copyloopvar
+  exclusions:
+    rules:
+      # Tests close caches and stubs in defers and use fixed-signature callbacks.
+      - path: _test\.go
+        linters: [errcheck]
+      - path: _test\.go
+        text: "unused-parameter"

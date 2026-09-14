@@ -19,6 +19,10 @@ type config struct {
 	versionTTL    time.Duration
 	sweepInterval time.Duration
 	maxRefreshes  int
+	negativeTTL   time.Duration
+	lockTTL       time.Duration
+	lockPoll      time.Duration
+	invalidator   Invalidator
 	clock         Clock
 	rand          func() float64
 }
@@ -139,6 +143,42 @@ func WithSweepInterval(d time.Duration) Option {
 			return fmt.Errorf("cachex: negative sweep interval")
 		}
 		c.sweepInterval = d
+		return nil
+	}
+}
+
+// WithNegativeTTL caches a Loader's ErrNotFound for d, so repeated lookups of absent
+// records don't hit the source. 0 (default) disables.
+func WithNegativeTTL(d time.Duration) Option {
+	return func(c *config) error {
+		if d < 0 {
+			return fmt.Errorf("cachex: negative negative TTL")
+		}
+		c.negativeTTL = d
+		return nil
+	}
+}
+
+// WithDistributedLock makes GetOrLoad take a lock in L2 before loading, so across all
+// processes one loader runs per key. Others poll every poll until the value appears or ttl
+// passes, then load themselves. ttl should exceed the slowest load. Needs WithL2.
+func WithDistributedLock(ttl, poll time.Duration) Option {
+	return func(c *config) error {
+		if ttl <= 0 || poll <= 0 {
+			return fmt.Errorf("cachex: lock ttl and poll must be positive")
+		}
+		c.lockTTL, c.lockPoll = ttl, poll
+		return nil
+	}
+}
+
+// WithInvalidator broadcasts Delete and Namespace.Invalidate to other processes.
+func WithInvalidator(inv Invalidator) Option {
+	return func(c *config) error {
+		if inv == nil {
+			return fmt.Errorf("cachex: nil invalidator")
+		}
+		c.invalidator = inv
 		return nil
 	}
 }

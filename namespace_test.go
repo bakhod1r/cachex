@@ -56,9 +56,8 @@ func TestNamespaceIsolation(t *testing.T) {
 	if v, err := b.Get(ctx, "k"); err != nil || string(v) != "B" {
 		t.Fatalf("invalidating a touched b: %q %v", v, err)
 	}
-	if e.c.Stats().Entries != 1 {
-		t.Fatalf("Invalidate should free local L1 copies, entries=%d", e.c.Stats().Entries)
-	}
+	// Freeing old L1 copies runs in the background.
+	waitFor(t, func() bool { return e.c.Stats().Entries == 1 })
 }
 
 func TestNamespaceVersionLostNeverResurrects(t *testing.T) {

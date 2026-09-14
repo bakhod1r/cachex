@@ -226,7 +226,7 @@ func TestPurge(t *testing.T) {
 	}
 }
 
-func TestOnEvictWithoutLock(t *testing.T) {
+func TestOnEvictWithoutLock(_ *testing.T) {
 	var c *Cache
 	c, _ = newTest(Options{MaxEntries: 1, OnEvict: func(k string, _ Reason) {
 		c.Get(k) // would deadlock if lock held
@@ -308,4 +308,67 @@ func BenchmarkGetParallel(b *testing.B) {
 			i++
 		}
 	})
+}
+
+func TestPurgeCallsOnEvictRemoved(t *testing.T) {
+	var r evictRec
+	c, _ := newTest(Options{Shards: 4, OnEvict: r.fn})
+	for i := 0; i < 20; i++ {
+		c.Set(strconv.Itoa(i), []byte("x"), 0)
+	}
+	before := c.Stats()
+	c.Purge()
+	if len(r.evs) != 20 {
+		t.Fatalf("got %d callbacks, want 20: %v", len(r.evs), r.evs)
+	}
+	seen := map[string]bool{}
+	for _, e := range r.evs {
+		seen[e] = true
+	}
+	for i := 0; i < 20; i++ {
+		if k := fmt.Sprintf("%d:%d", i, Removed); !seen[k] {
+			t.Fatalf("missing %s", k)
+		}
+	}
+	after := c.Stats()
+	if after.Evictions != before.Evictions || after.Expirations != before.Expirations ||
+		after.Hits != before.Hits || after.Misses != before.Misses {
+		t.Fatalf("Purge changed counters: before %+v after %+v", before, after)
+	}
+}
+
+func TestPurgeOnEvictWithoutLock(t *testing.T) {
+	var c *Cache
+	c, _ = newTest(Options{Shards: 2, OnEvict: func(k string, _ Reason) {
+		c.Set("re-"+k, []byte("y"), 0) // deadlocks if a shard lock is held
+	}})
+	c.Set("a", []byte("x"), 0)
+	c.Set("b", []byte("x"), 0)
+	done := make(chan struct{})
+	go func() { c.Purge(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Purge deadlocked calling OnEvict")
+	}
+}
+
+func TestLiveLen(t *testing.T) {
+	c, ck := newTest(Options{Shards: 4})
+	c.Set("perm", []byte("x"), 0)
+	c.Set("short", []byte("x"), time.Second)
+	c.Set("long", []byte("x"), time.Hour)
+	if n := c.LiveLen(); n != 3 {
+		t.Fatalf("LiveLen=%d want 3", n)
+	}
+	ck.Advance(time.Second) // expiresAt reached: expired (now >= expiresAt)
+	if n := c.LiveLen(); n != 2 {
+		t.Fatalf("LiveLen=%d want 2", n)
+	}
+	if n := c.Len(); n != 3 {
+		t.Fatalf("Len=%d want 3 (includes unswept expired)", n)
+	}
+	if s := c.Stats(); s.Expirations != 0 {
+		t.Fatalf("LiveLen must not sweep: %+v", s)
+	}
 }

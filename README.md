@@ -60,7 +60,37 @@ v, err := c.GetOrLoad(ctx, "user:42", time.Minute, func(ctx context.Context) ([]
   probability driven by loader duration and `WithBeta` (0 disables). `Stats.EarlyRefreshes`.
 - **Stale window**: with `WithStaleWindow(d)`, an entry expired less than `d` ago is served
   while it refreshes in the background. `Stats.StaleServed`.
-- Background refreshes are capped at 16 concurrent; loader errors are returned, never cached.
+- **Distributed lock**: with `WithDistributedLock(ttl, poll)`, a loader runs once per key
+  across *all* processes (memcached `add` lock). Waiters poll until the value appears or
+  `ttl` passes, then load themselves; any L2 problem fails open. `Stats.LockWaits`.
+- **Negative caching**: return `cachex.ErrNotFound` from the loader and set
+  `WithNegativeTTL(d)`; repeated lookups of absent records return `ErrNotFound` without
+  loading. `Stats.NegativeHits`.
+- Background refreshes are capped at 16 concurrent; other loader errors are returned, never cached.
+
+## GetMulti
+
+```go
+vals, err := c.GetMulti(ctx, []string{"a", "b", "c"}) // map holds only found keys
+```
+
+L1 answers first; remaining keys go to L2 in one round trip when the store implements
+`cachex.MultiGetter` (memcached does). Keys starting with `cachex:` are reserved.
+
+## Typed values
+
+```go
+import "github.com/bakhod1r/cachex/typed"
+
+users := typed.New(c, typed.JSON[User]())
+u, err := users.GetOrLoad(ctx, "42", time.Minute, func(ctx context.Context) (User, error) {
+    return db.LoadUser(ctx, 42)
+})
+```
+
+Codecs: `typed.JSON[V]()`, `typed.String()`, `typed.Bytes()`, or your own `typed.Codec[V]`.
+Backends: `*cachex.Cache` or `*cachex.Namespace`. An undecodable cached value is deleted and
+reloaded once by `GetOrLoad`; `Get` returns an error wrapping `typed.ErrDecode`.
 
 ## Namespaces
 
@@ -74,8 +104,8 @@ err = users.Invalidate(ctx) // drops every key in "users" on all nodes
 
 Keys are stored as `<name>:<version>:<key>`; `Invalidate` atomically increments a version
 counter in L2 (`cachex:ns:<name>:v`) and frees this process's L1 copies immediately. If the
-version is unknown (L2 down, never fetched), `Get` misses, `Set` is skipped and `GetOrLoad`
-calls the loader without caching.
+version is unknown (L2 down, never fetched), `Get` misses, `Set` returns the error and
+`GetOrLoad` calls the loader without caching.
 
 ## Stats
 
@@ -85,9 +115,23 @@ fmt.Println(s.L1Hits, s.L2Hits, s.Loads, s.Entries, s.Breaker, s.HitRatio())
 ```
 
 Fields: `L1Hits, L1Misses, L2Hits, L2Misses, L2Errors, L2Skipped, Loads, LoadErrors,
-LoadsShared, StaleServed, EarlyRefreshes, DecodeErrors, Evictions, Expirations, Entries,
-Bytes, Breaker` (`"closed"`, `"open"`, `"half-open"`). Counters are read independently;
-a snapshot is not atomic across fields.
+LoadsShared, StaleServed, EarlyRefreshes, DecodeErrors, NegativeHits, LockWaits,
+PublishErrors, Evictions, Expirations, Entries, Bytes, Breaker` (`"closed"`, `"open"`, `"half-open"`). Counters are read independently;
+a snapshot is not atomic across fields. `HitRatio()` is `(L1Hits+L2Hits) / (L1Hits+L1Misses)`:
+every lookup touches L1 once, so L1 hits plus misses is the total lookup count.
+
+### Prometheus
+
+A separate module keeps the core free of Prometheus dependencies:
+
+```go
+import cachexprom "github.com/bakhod1r/cachex/prometheus"
+
+prometheus.MustRegister(cachexprom.NewCollector(c, cachexprom.WithNamespace("myapp_cache")))
+```
+
+Metrics are read from `Stats()` once per scrape (`*_hits_total{tier}`, `*_misses_total{tier}`,
+`*_l2_errors_total`, `*_loads_total`, `*_entries`, `*_breaker_state{state}`, ...).
 
 ## Degradation (circuit breaker)
 
@@ -109,6 +153,10 @@ L2 is the shared source of truth; L1 is per process.
 - After `Namespace.Invalidate`, other nodes see the new version within
   **`WithVersionTTL`** (default 2s). Old L1 entries need not expire first: the version is
   part of the key, so they simply become unreachable.
+- With `WithInvalidator(inv)` both bounds become "as fast as your message bus": `Delete` and
+  `Invalidate` are broadcast and every subscribed process drops its L1 copies immediately.
+  Implement `cachex.Invalidator` over Redis pub/sub, NATS, etc. (`memstore.NewBus()` is an
+  in-process implementation). Delivery is best effort; the TTL bounds still hold.
 
 ## Options
 
@@ -126,6 +174,9 @@ L2 is the shared source of truth; L1 is per process.
 | `WithLoadTimeout(d)` | `5s` | Per-loader timeout |
 | `WithVersionTTL(d)` | `2s` | Namespace version cache; invalidation visibility bound |
 | `WithSweepInterval(d)` | `1s` | Expired-entry janitor (0 = lazy expiry only) |
+| `WithNegativeTTL(d)` | `0` (off) | Cache a loader's `ErrNotFound` |
+| `WithDistributedLock(ttl, poll)` | off | One loader per key across processes |
+| `WithInvalidator(Invalidator)` | none | Broadcast invalidations between processes |
 | `WithClock(Clock)` | wall clock | Injectable clock for tests |
 
 ## Example
@@ -144,5 +195,10 @@ Integration against a real memcached:
 
 ```sh
 docker run -d --rm -p 11211:11211 memcached:1.6-alpine
-MEMCACHED_ADDR=localhost:11211 go test -tags=integration ./memcached/
+MEMCACHED_ADDR=localhost:11211 go test -race -tags=integration ./memcached/
 ```
+
+Other modules: `cd prometheus && go test -race ./...`; benchmarks against other Go caches
+live in `bench/` (see `bench/RESULTS.md`).
+
+Custom `Store` implementations can run the conformance suite: `storetest.Run(t, newStore, advance)`.
