@@ -389,3 +389,76 @@ func BenchmarkGetL1Hit(b *testing.B) {
 		}
 	})
 }
+
+func TestDeleteDuringLoadDoesNotResurrectStaleValue(t *testing.T) {
+	e := newEnv(t)
+	started, release := make(chan struct{}), make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		v, err := e.c.GetOrLoad(ctx, "k", time.Minute, func(context.Context) ([]byte, error) {
+			close(started)
+			<-release
+			return []byte("old"), nil
+		})
+		if err != nil || string(v) != "old" {
+			t.Errorf("loader caller got %q %v", v, err)
+		}
+	}()
+	<-started
+	if err := e.c.Delete(ctx, "k"); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	<-done
+	if v, err := e.c.Get(ctx, "k"); !errors.Is(err, cachex.ErrMiss) {
+		t.Fatalf("stale value cached after Delete: %q %v", v, err)
+	}
+	if _, err := e.l2.Get(ctx, "k"); !errors.Is(err, cachex.ErrMiss) {
+		t.Fatalf("stale value written to L2 after Delete: %v", err)
+	}
+}
+
+func TestSetDuringLoadWins(t *testing.T) {
+	e := newEnv(t)
+	started, release := make(chan struct{}), make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = e.c.GetOrLoad(ctx, "k", time.Minute, func(context.Context) ([]byte, error) {
+			close(started)
+			<-release
+			return []byte("old"), nil
+		})
+	}()
+	<-started
+	_ = e.c.Set(ctx, "k", []byte("new"), time.Minute)
+	close(release)
+	<-done
+	if v, err := e.c.Get(ctx, "k"); err != nil || string(v) != "new" {
+		t.Fatalf("got %q %v, want new", v, err)
+	}
+}
+
+func TestLoadAfterDeleteStartsFreshFlight(t *testing.T) {
+	e := newEnv(t)
+	started, release := make(chan struct{}), make(chan struct{})
+	go func() {
+		_, _ = e.c.GetOrLoad(ctx, "k", time.Minute, func(context.Context) ([]byte, error) {
+			close(started)
+			<-release
+			return []byte("old"), nil
+		})
+	}()
+	<-started
+	defer close(release)
+	_ = e.c.Delete(ctx, "k")
+	c, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	v, err := e.c.GetOrLoad(c, "k", time.Minute, func(context.Context) ([]byte, error) {
+		return []byte("fresh"), nil
+	})
+	if err != nil || string(v) != "fresh" {
+		t.Fatalf("got %q %v, want fresh (joined pre-Delete flight?)", v, err)
+	}
+}

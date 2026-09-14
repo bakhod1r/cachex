@@ -1,5 +1,10 @@
 // Package lru implements a sharded, byte-valued LRU cache with per-entry TTL.
 //
+// Recency uses the CLOCK (second-chance) approximation: Get only sets an atomic
+// "visited" bit under a read lock, so hot keys don't serialize readers on a write
+// lock. At eviction a visited tail entry has its bit cleared and moves to the front
+// instead of being evicted. Hit ratio stays close to strict LRU.
+//
 // Expiry is lazy on Get; callers that need bounded memory for expired but
 // unread entries drive Sweep from their own janitor.
 package lru
@@ -12,6 +17,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/bakhod1r/cachex/internal/counter"
 )
 
 // entryOverhead is the fixed per-entry byte accounting added to len(key)+len(val).
@@ -52,6 +59,7 @@ type entry struct {
 	val       []byte
 	expiresAt int64 // 0 = never
 	size      int64
+	visited   atomic.Bool
 }
 
 type evicted struct {
@@ -60,12 +68,12 @@ type evicted struct {
 }
 
 type shard struct {
-	mu    sync.Mutex
+	mu    sync.RWMutex
 	items map[string]*list.Element
 	ll    list.List // front = MRU
 	bytes int64
 
-	hits, misses, evictions, expirations atomic.Uint64
+	hits, misses, evictions, expirations counter.Counter
 }
 
 // Cache is safe for concurrent use.
@@ -146,31 +154,49 @@ func (s *shard) removeLocked(el *list.Element) *entry {
 
 // Get returns the value for key. The returned slice is shared with the cache
 // and MUST be treated as read-only.
-func (c *Cache) Get(key string) ([]byte, bool) {
+func (c *Cache) Get(key string) ([]byte, bool) { return c.GetAt(key, c.now()) }
+
+// GetAt is Get with the caller's clock reading, saving a clock call on hot paths.
+func (c *Cache) GetAt(key string, now int64) ([]byte, bool) {
 	s := c.shardFor(key)
-	s.mu.Lock()
+	s.mu.RLock()
 	el, ok := s.items[key]
 	if !ok {
-		s.mu.Unlock()
+		s.mu.RUnlock()
 		s.misses.Add(1)
 		return nil, false
 	}
 	e := el.Value.(*entry)
-	if e.expiresAt != 0 && c.now() >= e.expiresAt {
-		s.removeLocked(el)
-		s.mu.Unlock()
-		s.expirations.Add(1)
+	if e.expiresAt != 0 && now >= e.expiresAt {
+		s.mu.RUnlock()
+		c.expire(s, key, el)
 		s.misses.Add(1)
-		if c.onEvict != nil {
-			c.onEvict(key, Expired)
-		}
 		return nil, false
 	}
-	s.ll.MoveToFront(el)
+	if !e.visited.Load() { // skip the write when already set: keeps the cache line shared
+		e.visited.Store(true)
+	}
 	v := e.val
-	s.mu.Unlock()
+	s.mu.RUnlock()
 	s.hits.Add(1)
 	return v, true
+}
+
+// expire removes el if it is still the stored, expired entry for key.
+func (c *Cache) expire(s *shard, key string, el *list.Element) {
+	s.mu.Lock()
+	cur, ok := s.items[key]
+	e := el.Value.(*entry)
+	if !ok || cur != el || e.expiresAt == 0 || c.now() < e.expiresAt {
+		s.mu.Unlock()
+		return
+	}
+	s.removeLocked(el)
+	s.mu.Unlock()
+	s.expirations.Add(1)
+	if c.onEvict != nil {
+		c.onEvict(key, Expired)
+	}
 }
 
 // Set stores a copy of val. ttl<=0 means no expiry. It returns false if the
@@ -200,19 +226,27 @@ func (c *Cache) Set(key string, val []byte, ttl time.Duration) bool {
 	copy(cp, val)
 
 	s.mu.Lock()
-	if el, ok := s.items[key]; ok {
-		e := el.Value.(*entry)
+	cur, ok := s.items[key]
+	if ok {
+		e := cur.Value.(*entry)
 		s.bytes += size - e.size
 		e.val, e.expiresAt, e.size = cp, exp, size
-		s.ll.MoveToFront(el)
+		s.ll.MoveToFront(cur)
 	} else {
-		s.items[key] = s.ll.PushFront(&entry{key: key, val: cp, expiresAt: exp, size: size})
+		cur = s.ll.PushFront(&entry{key: key, val: cp, expiresAt: exp, size: size})
+		s.items[key] = cur
 		s.bytes += size
 	}
-	// Evict from the tail; the new entry is at the front and fits on its own.
+	// Evict from the tail with second chance; the entry just written is never evicted.
 	for s.ll.Len() > 1 &&
 		((c.maxEntries > 0 && s.ll.Len() > c.maxEntries) || (c.maxBytes > 0 && s.bytes > c.maxBytes)) {
-		e := s.removeLocked(s.ll.Back())
+		back := s.ll.Back()
+		if e := back.Value.(*entry); back == cur || e.visited.Load() {
+			e.visited.Store(false)
+			s.ll.MoveToFront(back)
+			continue
+		}
+		e := s.removeLocked(back)
 		evs = append(evs, evicted{e.key, Capacity})
 	}
 	s.mu.Unlock()
@@ -263,9 +297,9 @@ func (c *Cache) DeletePrefix(prefix string) int {
 func (c *Cache) Len() int {
 	n := 0
 	for _, s := range c.shards {
-		s.mu.Lock()
+		s.mu.RLock()
 		n += s.ll.Len()
-		s.mu.Unlock()
+		s.mu.RUnlock()
 	}
 	return n
 }
@@ -296,14 +330,14 @@ func (c *Cache) Purge() {
 func (c *Cache) LiveLen() int {
 	n := 0
 	for _, s := range c.shards {
-		s.mu.Lock()
+		s.mu.RLock()
 		now := c.now()
 		for el := s.ll.Front(); el != nil; el = el.Next() {
 			if e := el.Value.(*entry); e.expiresAt == 0 || now < e.expiresAt {
 				n++
 			}
 		}
-		s.mu.Unlock()
+		s.mu.RUnlock()
 	}
 	return n
 }
@@ -316,10 +350,10 @@ func (c *Cache) Stats() Stats {
 		st.Misses += s.misses.Load()
 		st.Evictions += s.evictions.Load()
 		st.Expirations += s.expirations.Load()
-		s.mu.Lock()
+		s.mu.RLock()
 		st.Entries += s.ll.Len()
 		st.Bytes += s.bytes
-		s.mu.Unlock()
+		s.mu.RUnlock()
 	}
 	return st
 }

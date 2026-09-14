@@ -8,6 +8,7 @@ package cachex
 import (
 	"context"
 	"errors"
+	"hash/maphash"
 	"math"
 	"math/rand/v2"
 	"strings"
@@ -21,6 +22,8 @@ import (
 	"github.com/bakhod1r/cachex/internal/lru"
 )
 
+const genStripes = 1024
+
 // Loader computes a value on a cache miss.
 type Loader func(ctx context.Context) ([]byte, error)
 
@@ -32,6 +35,12 @@ type Cache struct {
 	br      *breaker.Breaker
 	flights flight.Group
 	vers    versions
+
+	// gens are striped per-key write generations. Set and Delete bump the stripe; a load
+	// that started under an older generation must not publish its value. A stripe collision
+	// only skips caching one load, never serves stale data.
+	gens    [genStripes]atomic.Uint64
+	genSeed maphash.Seed
 
 	refreshSem chan struct{}
 	baseCtx    context.Context
@@ -53,7 +62,7 @@ func New(opts ...Option) (*Cache, error) {
 	if cfg.rand == nil {
 		cfg.rand = rand.Float64
 	}
-	c := &Cache{cfg: cfg, l2: cfg.l2, refreshSem: make(chan struct{}, cfg.maxRefreshes)}
+	c := &Cache{cfg: cfg, l2: cfg.l2, refreshSem: make(chan struct{}, cfg.maxRefreshes), genSeed: maphash.MakeSeed()}
 	c.l1 = lru.New(lru.Options{
 		MaxEntries: cfg.l1MaxEntries,
 		MaxBytes:   cfg.l1MaxBytes,
@@ -93,8 +102,9 @@ func (c *Cache) Get(ctx context.Context, key string) ([]byte, error) {
 	if err := c.check(key); err != nil {
 		return nil, err
 	}
-	e, ok := c.lookup(ctx, key)
-	if !ok || e.Flags&envelope.FlagTombstone != 0 || e.Expired(c.nowNs()) {
+	now := c.nowNs()
+	e, ok := c.lookupAt(ctx, key, now)
+	if !ok || e.Flags&envelope.FlagTombstone != 0 || e.Expired(now) {
 		return nil, ErrMiss
 	}
 	return clone(e.Value), nil
@@ -107,6 +117,7 @@ func (c *Cache) Set(ctx context.Context, key string, val []byte, ttl time.Durati
 	if err := c.check(key); err != nil {
 		return err
 	}
+	c.bump(key)
 	c.store(ctx, key, envelope.Entry{Value: val}, c.ttl(ttl))
 	return nil
 }
@@ -117,6 +128,8 @@ func (c *Cache) Delete(ctx context.Context, key string) error {
 	if err := c.check(key); err != nil {
 		return err
 	}
+	c.bump(key)
+	c.flights.Forget(key) // later loads must not join a flight that read pre-Delete data
 	c.l1.Delete(key)
 	var err error
 	if c.l2 != nil {
@@ -295,6 +308,7 @@ func (c *Cache) GetOrLoad(ctx context.Context, key string, ttl time.Duration, lo
 }
 
 func (c *Cache) load(ctx context.Context, key string, ttl time.Duration, load Loader) ([]byte, error) {
+	gen := c.gen(key)
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.loadTimeout)
 	defer cancel()
 	start := c.cfg.clock.Now()
@@ -309,8 +323,28 @@ func (c *Cache) load(ctx context.Context, key string, ttl time.Duration, load Lo
 		return nil, err
 	}
 	delta := c.cfg.clock.Now().Sub(start)
+	if c.gen(key) != gen {
+		c.st.loadsDiscarded.Add(1)
+		return v, nil // Set/Delete raced the loader: caller gets v, cache keeps the newer write
+	}
 	c.store(ctx, key, envelope.Entry{Value: v, Delta: int64(delta)}, ttl)
+	if c.gen(key) != gen {
+		// Set/Delete landed between the check and our write; undo so ours cannot outlive it.
+		c.st.loadsDiscarded.Add(1)
+		c.l1.Delete(key)
+		if c.l2 != nil {
+			_ = c.l2Call(func() error { return c.l2.Delete(ctx, key) })
+		}
+	}
 	return v, nil
+}
+
+func (c *Cache) gen(key string) uint64 {
+	return c.gens[maphash.String(c.genSeed, key)%genStripes].Load()
+}
+
+func (c *Cache) bump(key string) {
+	c.gens[maphash.String(c.genSeed, key)%genStripes].Add(1)
 }
 
 // fresh reports a live cached answer: a value, or ErrNotFound for a live tombstone.
@@ -392,7 +426,11 @@ func (c *Cache) earlyRefresh(e envelope.Entry, now int64) bool {
 
 // lookup reads L1 then L2 and backfills L1. The returned entry may be expired (stale window).
 func (c *Cache) lookup(ctx context.Context, key string) (envelope.Entry, bool) {
-	if raw, ok := c.l1.Get(key); ok {
+	return c.lookupAt(ctx, key, c.nowNs())
+}
+
+func (c *Cache) lookupAt(ctx context.Context, key string, now int64) (envelope.Entry, bool) {
+	if raw, ok := c.l1.GetAt(key, now); ok {
 		if e, err := envelope.Decode(raw); err == nil {
 			c.st.l1Hits.Add(1)
 			return e, true
@@ -421,7 +459,7 @@ func (c *Cache) lookup(ctx context.Context, key string) (envelope.Entry, bool) {
 		return envelope.Entry{}, false
 	}
 	c.st.l2Hits.Add(1)
-	now := c.nowNs()
+	now = c.nowNs() // L2 round trip took time
 	if hold := c.l1Hold(e, now); hold > 0 {
 		c.l1.Set(key, raw, hold)
 	}

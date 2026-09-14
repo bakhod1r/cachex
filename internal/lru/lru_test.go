@@ -372,3 +372,29 @@ func TestLiveLen(t *testing.T) {
 		t.Fatalf("LiveLen must not sweep: %+v", s)
 	}
 }
+
+func TestSecondChanceKeepsHotKey(t *testing.T) {
+	c := New(Options{MaxEntries: 4, Shards: 1})
+	c.Set("hot", []byte("h"), 0)
+	for i := range 100 {
+		if _, ok := c.Get("hot"); !ok {
+			t.Fatalf("hot key evicted after %d inserts", i)
+		}
+		c.Set(string(rune('a'+i%26))+string(rune('0'+i%10)), []byte("x"), 0)
+	}
+}
+
+func TestNewEntryNotEvictedWhenAllVisited(t *testing.T) {
+	c := New(Options{MaxEntries: 3, Shards: 1})
+	for _, k := range []string{"a", "b", "c"} {
+		c.Set(k, []byte(k), 0)
+		c.Get(k)
+	}
+	c.Set("d", []byte("d"), 0)
+	if _, ok := c.Get("d"); !ok {
+		t.Fatal("just-written entry was evicted")
+	}
+	if c.Len() != 3 {
+		t.Fatalf("Len = %d, want 3", c.Len())
+	}
+}

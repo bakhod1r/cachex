@@ -158,6 +158,15 @@ L2 is the shared source of truth; L1 is per process.
   Implement `cachex.Invalidator` over Redis pub/sub, NATS, etc. (`memstore.NewBus()` is an
   in-process implementation). Delivery is best effort; the TTL bounds still hold.
 
+Redis pub/sub adapter (separate module):
+
+```go
+import cachexredis "github.com/bakhod1r/cachex/redis"
+
+inv, err := cachexredis.New(cachexredis.Config{Client: redis.NewClient(&redis.Options{Addr: "localhost:6379"})})
+c, err := cachex.New(cachex.WithL2(store), cachex.WithInvalidator(inv))
+```
+
 ## Options
 
 | Option | Default | Meaning |
@@ -198,7 +207,8 @@ docker run -d --rm -p 11211:11211 memcached:1.6-alpine
 MEMCACHED_ADDR=localhost:11211 go test -race -tags=integration ./memcached/
 ```
 
-Other modules: `cd prometheus && go test -race ./...`; benchmarks against other Go caches
+Other modules: `cd prometheus && go test -race ./...`; Redis adapter:
+`REDIS_ADDR=localhost:6379 go test -race -tags=integration ./...` inside `redis/`; benchmarks against other Go caches
 live in `bench/` (see `bench/RESULTS.md`).
 
 Custom `Store` implementations can run the conformance suite: `storetest.Run(t, newStore, advance)`.

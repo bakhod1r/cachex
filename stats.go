@@ -1,12 +1,13 @@
 package cachex
 
-import "sync/atomic"
+import "github.com/bakhod1r/cachex/internal/counter"
 
 type counters struct {
-	l1Hits, l1Misses, l2Hits, l2Misses, l2Errors, l2Skipped atomic.Uint64
-	loads, loadErrors, loadsShared                          atomic.Uint64
-	staleServed, earlyRefreshes, decodeErrors               atomic.Uint64
-	negativeHits, lockWaits, publishErrors                  atomic.Uint64
+	l1Hits, l1Misses, l2Hits, l2Misses, l2Errors, l2Skipped counter.Counter
+	loads, loadErrors, loadsShared                          counter.Counter
+	staleServed, earlyRefreshes, decodeErrors               counter.Counter
+	negativeHits, lockWaits, publishErrors                  counter.Counter
+	loadsDiscarded                                          counter.Counter
 }
 
 // Stats is a point-in-time snapshot. Counters are read independently, so a snapshot
@@ -24,6 +25,7 @@ type Stats struct {
 	NegativeHits           uint64 // cached ErrNotFound answers
 	LockWaits              uint64 // loads that waited on another process's lock
 	PublishErrors          uint64 // failed invalidation broadcasts
+	LoadsDiscarded         uint64 // loads not cached because Set/Delete raced them
 	Evictions, Expirations uint64
 	Entries                int
 	Bytes                  int64
@@ -51,7 +53,8 @@ func (c *Cache) Stats() Stats {
 		StaleServed: c.st.staleServed.Load(), EarlyRefreshes: c.st.earlyRefreshes.Load(),
 		DecodeErrors: c.st.decodeErrors.Load(), NegativeHits: c.st.negativeHits.Load(),
 		LockWaits: c.st.lockWaits.Load(), PublishErrors: c.st.publishErrors.Load(),
-		Evictions: l1.Evictions, Expirations: l1.Expirations,
+		LoadsDiscarded: c.st.loadsDiscarded.Load(),
+		Evictions:      l1.Evictions, Expirations: l1.Expirations,
 		Entries: l1.Entries, Bytes: l1.Bytes,
 		Breaker: c.br.State().String(),
 	}
