@@ -1,0 +1,163 @@
+// Package storetest is a conformance suite for cachex.Store implementations.
+package storetest
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/bakhod1r/cachex"
+)
+
+// Run exercises any cachex.Store. newStore returns a fresh empty store.
+// advance moves the store's clock forward (may be nil: TTL subtests are skipped).
+func Run(t *testing.T, newStore func(t *testing.T) cachex.Store, advance func(d time.Duration)) {
+	t.Helper()
+	ctx := context.Background()
+	fresh := func(t *testing.T) cachex.Store {
+		s := newStore(t)
+		t.Cleanup(func() { _ = s.Close() })
+		return s
+	}
+
+	t.Run("GetMissing", func(t *testing.T) {
+		s := fresh(t)
+		v, err := s.Get(ctx, "missing")
+		if !errors.Is(err, cachex.ErrMiss) {
+			t.Fatalf("Get missing: err=%v val=%q, want ErrMiss", err, v)
+		}
+	})
+
+	t.Run("SetGetRoundTrip", func(t *testing.T) {
+		s := fresh(t)
+		in := []byte("hello")
+		if err := s.Set(ctx, "k", in, 0); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		in[0] = 'X'
+		got, err := s.Get(ctx, "k")
+		if err != nil || string(got) != "hello" {
+			t.Fatalf("Get = %q, %v; want \"hello\" (input mutation must not leak)", got, err)
+		}
+		got[0] = 'Y'
+		again, err := s.Get(ctx, "k")
+		if err != nil || string(again) != "hello" {
+			t.Fatalf("Get after mutating returned slice = %q, %v; want \"hello\"", again, err)
+		}
+	})
+
+	t.Run("Overwrite", func(t *testing.T) {
+		s := fresh(t)
+		mustSet(t, s, "k", "v1", 0)
+		mustSet(t, s, "k", "v2", 0)
+		expectVal(t, s, "k", "v2")
+	})
+
+	t.Run("Add", func(t *testing.T) {
+		s := fresh(t)
+		if err := s.Add(ctx, "k", []byte("a"), 0); err != nil {
+			t.Fatalf("Add absent: %v", err)
+		}
+		if err := s.Add(ctx, "k", []byte("b"), 0); !errors.Is(err, cachex.ErrNotStored) {
+			t.Fatalf("Add present: err=%v, want ErrNotStored", err)
+		}
+		expectVal(t, s, "k", "a")
+	})
+
+	t.Run("Delete", func(t *testing.T) {
+		s := fresh(t)
+		mustSet(t, s, "k", "v", 0)
+		if err := s.Delete(ctx, "k"); err != nil {
+			t.Fatalf("Delete present: %v", err)
+		}
+		if _, err := s.Get(ctx, "k"); !errors.Is(err, cachex.ErrMiss) {
+			t.Fatalf("Get after Delete: err=%v, want ErrMiss", err)
+		}
+		if err := s.Delete(ctx, "k"); err != nil {
+			t.Fatalf("Delete missing: %v", err)
+		}
+	})
+
+	t.Run("Incr", func(t *testing.T) {
+		s := fresh(t)
+		if _, err := s.Incr(ctx, "c", 1); !errors.Is(err, cachex.ErrMiss) {
+			t.Fatalf("Incr missing: err=%v, want ErrMiss", err)
+		}
+		mustSet(t, s, "c", "5", 0)
+		n, err := s.Incr(ctx, "c", 3)
+		if err != nil || n != 8 {
+			t.Fatalf("Incr = %d, %v; want 8", n, err)
+		}
+		expectVal(t, s, "c", "8")
+	})
+
+	t.Run("TTLExpiry", func(t *testing.T) {
+		if advance == nil {
+			t.Skip("no clock advance func")
+		}
+		s := fresh(t)
+		mustSet(t, s, "k", "v", 2*time.Second)
+		expectVal(t, s, "k", "v")
+		advance(3 * time.Second)
+		if v, err := s.Get(ctx, "k"); !errors.Is(err, cachex.ErrMiss) {
+			t.Fatalf("Get after expiry: val=%q err=%v, want ErrMiss", v, err)
+		}
+	})
+
+	t.Run("NoExpiryForNonPositiveTTL", func(t *testing.T) {
+		if advance == nil {
+			t.Skip("no clock advance func")
+		}
+		s := fresh(t)
+		mustSet(t, s, "zero", "v", 0)
+		mustSet(t, s, "neg", "v", -time.Second)
+		advance(24 * time.Hour)
+		expectVal(t, s, "zero", "v")
+		expectVal(t, s, "neg", "v")
+	})
+
+	t.Run("ConcurrentSetGet", func(t *testing.T) {
+		s := fresh(t)
+		const workers = 50
+		var wg sync.WaitGroup
+		errs := make(chan error, workers)
+		for i := 0; i < workers; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				key := fmt.Sprintf("k%d", i%5)
+				want := fmt.Sprintf("v%d", i)
+				if err := s.Set(ctx, key, []byte(want), 0); err != nil {
+					errs <- fmt.Errorf("Set %s: %w", key, err)
+					return
+				}
+				if _, err := s.Get(ctx, key); err != nil {
+					errs <- fmt.Errorf("Get %s: %w", key, err)
+				}
+			}(i)
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Error(err)
+		}
+	})
+}
+
+func mustSet(t *testing.T, s cachex.Store, k, v string, ttl time.Duration) {
+	t.Helper()
+	if err := s.Set(context.Background(), k, []byte(v), ttl); err != nil {
+		t.Fatalf("Set %q: %v", k, err)
+	}
+}
+
+func expectVal(t *testing.T, s cachex.Store, k, want string) {
+	t.Helper()
+	got, err := s.Get(context.Background(), k)
+	if err != nil || string(got) != want {
+		t.Fatalf("Get %q = %q, %v; want %q", k, got, err, want)
+	}
+}
