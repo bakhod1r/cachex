@@ -5,7 +5,7 @@ go 1.25.3
 replace github.com/bakhod1r/cachex => ../
 
 require (
-	github.com/bakhod1r/cachex v0.0.0-00010101000000-000000000000
+	github.com/bakhod1r/cachex v0.2.0
 	github.com/twmb/franz-go v1.21.7
 	github.com/twmb/franz-go/pkg/kadm v1.18.0
 )
