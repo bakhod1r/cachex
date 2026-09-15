@@ -26,6 +26,7 @@ type config struct {
 	lockPoll      time.Duration
 	markerTTL     time.Duration // 0 = 2 * loadTimeout
 	invalidator   Invalidator
+	events        Events
 	clock         Clock
 	rand          func() float64
 }
@@ -212,6 +213,11 @@ func WithInvalidator(inv Invalidator) Option {
 		c.invalidator = inv
 		return nil
 	}
+}
+
+// WithEvents installs hooks for logging, metrics and tracing. Combine several with MergeEvents.
+func WithEvents(e Events) Option {
+	return func(c *config) error { c.events = e; return nil }
 }
 
 // WithClock injects a clock (tests).

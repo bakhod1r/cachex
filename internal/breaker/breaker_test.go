@@ -182,3 +182,30 @@ func TestCancelReleasesProbeWithoutJudging(t *testing.T) {
 		t.Fatalf("cancels tripped breaker: %v", b2.State())
 	}
 }
+
+func TestOnChangeReportsEachTransition(t *testing.T) {
+	c := &clock{t: time.Unix(0, 0)}
+	type tr struct{ from, to State }
+	var got []tr
+	var b *Breaker
+	b = New(Config{Window: 10 * time.Second, MinRequests: 4, FailureRatio: 0.5, Cooldown: 5 * time.Second, HalfOpenProbes: 1, Now: c.now,
+		OnChange: func(from, to State) {
+			b.State() // called outside the mutex: must not deadlock
+			got = append(got, tr{from, to})
+		}})
+	trip(b)
+	c.add(5 * time.Second)
+	b.Allow() // open -> half-open
+	b.Failure()
+	c.add(10 * time.Second)
+	b.Success() // open -> half-open -> closed in one call: two transitions
+	want := []tr{{Closed, Open}, {Open, HalfOpen}, {HalfOpen, Open}, {Open, HalfOpen}, {HalfOpen, Closed}}
+	if len(got) != len(want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v want %v", got, want)
+		}
+	}
+}

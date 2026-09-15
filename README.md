@@ -189,6 +189,37 @@ prometheus.MustRegister(cachexprom.NewCollector(c, cachexprom.WithNamespace("mya
 Metrics are read from `Stats()` once per scrape (`*_hits_total{tier}`, `*_misses_total{tier}`,
 `*_l2_errors_total`, `*_loads_total`, `*_entries`, `*_breaker_state{state}`, ...).
 
+## Events & logging
+
+`WithEvents` installs hooks for logging, metrics and tracing. Nil fields are skipped, so an
+unset hook costs nothing.
+
+```go
+c, _ := cachex.New(
+	cachex.WithL2(store),
+	cachex.WithEvents(cachex.MergeEvents(
+		cachex.SlogEvents(slog.Default()),
+		cachex.Events{
+			OpStart: func(ctx context.Context, op cachex.Op, key string) context.Context {
+				ctx, _ = tracer.Start(ctx, "cache."+op.String()) // ctx reaches L2 calls and the loader
+				return ctx
+			},
+			OpEnd: func(ctx context.Context, info cachex.OpInfo, d time.Duration) {
+				trace.SpanFromContext(ctx).End() // info.Tier: l1, l2, stale, miss, loaded, negative
+			},
+		},
+	)),
+)
+```
+
+- `OpStart`/`OpEnd`: every public operation; `OpInfo.Tier` says who answered.
+- `LoadEnd`: each single-key loader call, including background refreshes.
+- `L2Error`, `BreakerChange`, `LoaderPanic`, `PublishError`: rare, actionable failures.
+- `SlogEvents(l)` logs only the failure hooks (L2/publish errors and breaker opening at Warn,
+  other breaker transitions at Info, loader panics at Error), never per operation.
+
+Hooks run synchronously and must not call back into the Cache.
+
 ## Degradation (circuit breaker)
 
 All L2 calls go through a breaker (10s window, min 20 requests, opens at 50% failures,

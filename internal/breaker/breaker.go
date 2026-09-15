@@ -39,6 +39,8 @@ type Config struct {
 	Cooldown       time.Duration    // open duration before half-open, default 5s
 	HalfOpenProbes int              // default 1
 	Now            func() time.Time // nil = time.Now
+	// OnChange, if set, is called once per state transition, after the mutex is released.
+	OnChange func(from, to State)
 }
 
 // Breaker is safe for concurrent use.
@@ -53,7 +55,11 @@ type Breaker struct {
 	openedAt    time.Time
 	cooldown    time.Duration // current (possibly doubled) cooldown
 	inflight    int           // half-open probes outstanding
+	changes     [2]change     // transitions made under mu, reported by unlock
+	nchanges    int
 }
+
+type change struct{ from, to State }
 
 // New returns a Closed breaker.
 func New(c Config) *Breaker {
@@ -78,12 +84,38 @@ func New(c Config) *Breaker {
 	return &Breaker{cfg: c, cooldown: c.Cooldown, windowStart: c.Now()}
 }
 
+// set moves to state s, recording the transition for OnChange. Caller holds mu.
+func (b *Breaker) set(s State) {
+	if s == b.state {
+		return
+	}
+	if b.cfg.OnChange != nil && b.nchanges < len(b.changes) {
+		b.changes[b.nchanges] = change{b.state, s}
+		b.nchanges++
+	}
+	b.state = s
+}
+
+// unlock releases mu, then reports transitions recorded while it was held.
+func (b *Breaker) unlock() {
+	if b.nchanges == 0 {
+		b.mu.Unlock()
+		return
+	}
+	cs, n := b.changes, b.nchanges
+	b.nchanges = 0
+	b.mu.Unlock()
+	for _, c := range cs[:n] {
+		b.cfg.OnChange(c.from, c.to)
+	}
+}
+
 // advance applies time-driven transitions. Caller holds mu.
 func (b *Breaker) advance(now time.Time) {
 	switch b.state {
 	case Open:
 		if now.Sub(b.openedAt) >= b.cooldown {
-			b.state = HalfOpen
+			b.set(HalfOpen)
 			b.inflight = 0
 		}
 	case Closed:
@@ -97,7 +129,7 @@ func (b *Breaker) advance(now time.Time) {
 // HalfOpenProbes outstanding probes; each admitted call must report Success, Failure or Cancel.
 func (b *Breaker) Allow() bool {
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	defer b.unlock()
 	b.advance(b.cfg.Now())
 	switch b.state {
 	case Closed:
@@ -114,14 +146,14 @@ func (b *Breaker) Allow() bool {
 // Success records a successful call.
 func (b *Breaker) Success() {
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	defer b.unlock()
 	now := b.cfg.Now()
 	b.advance(now)
 	switch b.state {
 	case Closed:
 		b.successes++
 	case HalfOpen:
-		b.state = Closed
+		b.set(Closed)
 		b.windowStart, b.successes, b.failures, b.inflight = now, 0, 0, 0
 		b.cooldown = b.cfg.Cooldown
 	}
@@ -130,7 +162,7 @@ func (b *Breaker) Success() {
 // Failure records a failed call.
 func (b *Breaker) Failure() {
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	defer b.unlock()
 	now := b.cfg.Now()
 	b.advance(now)
 	switch b.state {
@@ -138,14 +170,16 @@ func (b *Breaker) Failure() {
 		b.failures++
 		total := b.successes + b.failures
 		if total >= b.cfg.MinRequests && float64(b.failures)/float64(total) >= b.cfg.FailureRatio {
-			b.state, b.openedAt, b.cooldown = Open, now, b.cfg.Cooldown
+			b.set(Open)
+			b.openedAt, b.cooldown = now, b.cfg.Cooldown
 		}
 	case HalfOpen:
 		next := b.cooldown * 2
 		if limit := max(maxCooldown, b.cfg.Cooldown); next > limit {
 			next = limit
 		}
-		b.state, b.openedAt, b.cooldown, b.inflight = Open, now, next, 0
+		b.set(Open)
+		b.openedAt, b.cooldown, b.inflight = now, next, 0
 	}
 }
 
@@ -153,7 +187,7 @@ func (b *Breaker) Failure() {
 // cancelled). It frees a half-open probe slot without closing or opening the breaker.
 func (b *Breaker) Cancel() {
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	defer b.unlock()
 	if b.state == HalfOpen && b.inflight > 0 {
 		b.inflight--
 	}
@@ -162,7 +196,7 @@ func (b *Breaker) Cancel() {
 // State returns the current state, applying elapsed-cooldown transitions.
 func (b *Breaker) State() State {
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	defer b.unlock()
 	b.advance(b.cfg.Now())
 	return b.state
 }

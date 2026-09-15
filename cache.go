@@ -49,6 +49,7 @@ type Cache struct {
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
 	closed     atomic.Bool
+	opHooks    bool // OpStart or OpEnd set
 
 	st counters
 }
@@ -78,7 +79,12 @@ func New(opts ...Option) (*Cache, error) {
 		Frequency:  cfg.l1Frequency,
 		Now:        c.nowNs,
 	})
-	c.br = breaker.New(breaker.Config{Now: cfg.clock.Now})
+	c.opHooks = cfg.events.OpStart != nil || cfg.events.OpEnd != nil
+	bcfg := breaker.Config{Now: cfg.clock.Now}
+	if f := cfg.events.BreakerChange; f != nil {
+		bcfg.OnChange = func(from, to breaker.State) { f(from.String(), to.String()) }
+	}
+	c.br = breaker.New(bcfg)
 	c.baseCtx, c.cancel = context.WithCancel(context.Background())
 	if cfg.invalidator != nil {
 		if err := cfg.invalidator.Subscribe(c.baseCtx, c.onInvalidation); err != nil {
@@ -108,15 +114,26 @@ func (c *Cache) Close() error {
 
 // Get returns a copy of the cached value, or ErrMiss. L2 failures degrade to a miss.
 func (c *Cache) Get(ctx context.Context, key string) ([]byte, error) {
+	if !c.opHooks {
+		v, _, err := c.get(ctx, key)
+		return v, err
+	}
+	ctx, start := c.opBegin(ctx, OpGet, key)
+	v, tier, err := c.get(ctx, key)
+	c.opFinish(ctx, start, OpInfo{Op: OpGet, Key: key, Keys: 1, Tier: tier, Err: err})
+	return v, err
+}
+
+func (c *Cache) get(ctx context.Context, key string) ([]byte, Tier, error) {
 	if err := c.check(key); err != nil {
-		return nil, err
+		return nil, TierMiss, err
 	}
 	now := c.nowNs()
-	e, ok := c.lookupAt(ctx, key, now)
+	e, tier, ok := c.lookupAt(ctx, key, now)
 	if !ok || e.Flags&envelope.FlagTombstone != 0 || e.Expired(now) {
-		return nil, ErrMiss
+		return nil, TierMiss, ErrMiss
 	}
-	return clone(e.Value), nil
+	return clone(e.Value), tier, nil
 }
 
 // GetView calls fn with the cached value without copying it, or returns ErrMiss. The slice
@@ -124,24 +141,40 @@ func (c *Cache) Get(ctx context.Context, key string) ([]byte, error) {
 // Set of the same key doesn't change a slice already passed to fn. fn's error is returned.
 // On an L1 hit GetView does not allocate.
 func (c *Cache) GetView(ctx context.Context, key string, fn func(val []byte) error) error {
-	if fn == nil {
-		return errors.New("cachex: nil view func")
-	}
-	if err := c.check(key); err != nil {
+	if !c.opHooks {
+		_, err := c.getView(ctx, key, fn)
 		return err
 	}
-	now := c.nowNs()
-	e, ok := c.lookupAt(ctx, key, now)
-	if !ok || e.Flags&envelope.FlagTombstone != 0 || e.Expired(now) {
-		return ErrMiss
+	ctx, start := c.opBegin(ctx, OpGetView, key)
+	tier, err := c.getView(ctx, key, fn)
+	c.opFinish(ctx, start, OpInfo{Op: OpGetView, Key: key, Keys: 1, Tier: tier, Err: err})
+	return err
+}
+
+func (c *Cache) getView(ctx context.Context, key string, fn func(val []byte) error) (Tier, error) {
+	if fn == nil {
+		return TierMiss, errors.New("cachex: nil view func")
 	}
-	return fn(e.Value)
+	if err := c.check(key); err != nil {
+		return TierMiss, err
+	}
+	now := c.nowNs()
+	e, tier, ok := c.lookupAt(ctx, key, now)
+	if !ok || e.Flags&envelope.FlagTombstone != 0 || e.Expired(now) {
+		return TierMiss, ErrMiss
+	}
+	return tier, fn(e.Value)
 }
 
 // Set writes val to L2 then L1. ttl <= 0 uses the default TTL. A failed L2 write is not
 // returned as an error (the cache is best effort); L1 then keeps the value only for the
 // degraded TTL and Stats.L2Errors grows.
 func (c *Cache) Set(ctx context.Context, key string, val []byte, ttl time.Duration) error {
+	if c.opHooks {
+		var start time.Time
+		ctx, start = c.opBegin(ctx, OpSet, key)
+		defer func() { c.opFinish(ctx, start, OpInfo{Op: OpSet, Key: key, Keys: 1, Tier: TierMiss}) }()
+	}
 	if err := c.check(key); err != nil {
 		return err
 	}
@@ -152,21 +185,25 @@ func (c *Cache) Set(ctx context.Context, key string, val []byte, ttl time.Durati
 
 // Delete removes key from both tiers. Unlike Set, an L2 failure is returned, because a
 // value left in L2 would be served to every node.
-func (c *Cache) Delete(ctx context.Context, key string) error {
+func (c *Cache) Delete(ctx context.Context, key string) (err error) {
+	if c.opHooks {
+		var start time.Time
+		ctx, start = c.opBegin(ctx, OpDelete, key)
+		defer func() { c.opFinish(ctx, start, OpInfo{Op: OpDelete, Key: key, Keys: 1, Tier: TierMiss, Err: err}) }()
+	}
 	if err := c.check(key); err != nil {
 		return err
 	}
 	c.bump(key)
 	c.flights.Forget(key) // later loads must not join a flight that read pre-Delete data
 	c.l1.Delete(key)
-	var err error
 	if _, ok := c.l2.(CASStore); ok {
 		// Marker instead of delete: an in-flight load's Add/CompareAndSwap then fails.
 		now := c.nowNs()
 		raw := envelope.Encode(envelope.Entry{Flags: envelope.FlagDeleted, StoredAt: now, ExpireAt: now})
-		err = c.l2Call(func() error { return c.l2.Set(ctx, key, raw, c.cfg.markerTTL) })
+		err = c.l2Call("set", func() error { return c.l2.Set(ctx, key, raw, c.cfg.markerTTL) })
 	} else if c.l2 != nil {
-		err = c.l2Call(func() error { return c.l2.Delete(ctx, key) })
+		err = c.l2Call("delete", func() error { return c.l2.Delete(ctx, key) })
 	}
 	c.l1.Delete(key) // closes the race with a concurrent backfill from L2
 	c.publish(ctx, Invalidation{Keys: []string{key}})
@@ -176,14 +213,21 @@ func (c *Cache) Delete(ctx context.Context, key string) error {
 // GetMulti returns the cached values that are present; missing keys are simply absent.
 // L1 answers first; the rest go to L2 in one round trip when the store implements MultiGetter.
 func (c *Cache) GetMulti(ctx context.Context, keys []string) (map[string][]byte, error) {
-	out, _, err := c.getMulti(ctx, keys)
+	if !c.opHooks {
+		out, _, _, err := c.getMulti(ctx, keys)
+		return out, err
+	}
+	ctx, start := c.opBegin(ctx, OpGetMulti, "")
+	out, _, tier, err := c.getMulti(ctx, keys)
+	c.opFinish(ctx, start, OpInfo{Op: OpGetMulti, Keys: len(keys), Tier: tier, Err: err})
 	return out, err
 }
 
-// getMulti is GetMulti that also reports keys holding a live tombstone (cached ErrNotFound).
-func (c *Cache) getMulti(ctx context.Context, keys []string) (map[string][]byte, map[string]bool, error) {
+// getMulti is GetMulti that also reports keys holding a live tombstone (cached ErrNotFound)
+// and the farthest tier that answered.
+func (c *Cache) getMulti(ctx context.Context, keys []string) (map[string][]byte, map[string]bool, Tier, error) {
 	if c.closed.Load() {
-		return nil, nil, ErrClosed
+		return nil, nil, TierMiss, ErrClosed
 	}
 	out := make(map[string][]byte, len(keys))
 	absent := map[string]bool{}
@@ -191,7 +235,7 @@ func (c *Cache) getMulti(ctx context.Context, keys []string) (map[string][]byte,
 	now := c.nowNs()
 	for _, k := range keys {
 		if k == "" || strings.HasPrefix(k, reservedPrefix) {
-			return nil, nil, ErrInvalidKey
+			return nil, nil, TierMiss, ErrInvalidKey
 		}
 		if raw, ok := c.l1.Get(k); ok {
 			if e, err := envelope.Decode(raw); err == nil {
@@ -208,27 +252,31 @@ func (c *Cache) getMulti(ctx context.Context, keys []string) (map[string][]byte,
 		}
 		rest = append(rest, k)
 	}
+	tier := TierMiss
+	if len(out)+len(absent) > 0 {
+		tier = TierL1
+	}
 	if len(rest) == 0 || c.l2 == nil {
-		return out, absent, nil
+		return out, absent, tier, nil
 	}
 	mg, ok := c.l2.(MultiGetter)
 	if !ok {
 		for _, k := range rest {
 			if v, err := c.getL2Only(ctx, k); err == nil {
-				out[k] = v
+				out[k], tier = v, TierL2
 			} else if errors.Is(err, ErrNotFound) {
-				absent[k] = true
+				absent[k], tier = true, TierL2
 			}
 		}
-		return out, absent, nil
+		return out, absent, tier, nil
 	}
 	var found map[string][]byte
-	if err := c.l2Call(func() error {
+	if err := c.l2Call("get_multi", func() error {
 		var err error
 		found, err = mg.GetMulti(ctx, rest)
 		return err
 	}); err != nil {
-		return out, absent, nil // degraded: L1 answers only
+		return out, absent, tier, nil // degraded: L1 answers only
 	}
 	for _, k := range rest {
 		raw, ok := found[k]
@@ -237,17 +285,17 @@ func (c *Cache) getMulti(ctx context.Context, keys []string) (map[string][]byte,
 			continue
 		}
 		if v, err := c.accept(k, raw, now); err == nil {
-			out[k] = v
+			out[k], tier = v, TierL2
 		} else if errors.Is(err, ErrNotFound) {
-			absent[k] = true
+			absent[k], tier = true, TierL2
 		}
 	}
-	return out, absent, nil
+	return out, absent, tier, nil
 }
 
 func (c *Cache) getL2Only(ctx context.Context, key string) ([]byte, error) {
 	var raw []byte
-	if err := c.l2Call(func() error {
+	if err := c.l2Call("get", func() error {
 		var err error
 		raw, err = c.l2.Get(ctx, key)
 		return err
@@ -286,7 +334,12 @@ func (c *Cache) accept(key string, raw []byte, now int64) ([]byte, error) {
 }
 
 // SetMulti writes every entry like Set. Keys are validated first, so an invalid key writes nothing.
-func (c *Cache) SetMulti(ctx context.Context, items map[string][]byte, ttl time.Duration) error {
+func (c *Cache) SetMulti(ctx context.Context, items map[string][]byte, ttl time.Duration) (err error) {
+	if c.opHooks {
+		var start time.Time
+		ctx, start = c.opBegin(ctx, OpSetMulti, "")
+		defer func() { c.opFinish(ctx, start, OpInfo{Op: OpSetMulti, Keys: len(items), Tier: TierMiss, Err: err}) }()
+	}
 	for k := range items {
 		if err := c.check(k); err != nil {
 			return err
@@ -308,12 +361,23 @@ type MultiLoader func(ctx context.Context, keys []string) (map[string][]byte, er
 // Unlike GetOrLoad there is no single-flight across concurrent batches, no stale window and
 // no early refresh. Keys the source doesn't have are absent from the result.
 func (c *Cache) GetOrLoadMulti(ctx context.Context, keys []string, ttl time.Duration, load MultiLoader) (map[string][]byte, error) {
-	if load == nil {
-		return nil, errors.New("cachex: nil loader")
+	if !c.opHooks {
+		out, _, err := c.getOrLoadMulti(ctx, keys, ttl, load)
+		return out, err
 	}
-	out, absent, err := c.getMulti(ctx, keys)
+	ctx, start := c.opBegin(ctx, OpGetOrLoadMulti, "")
+	out, tier, err := c.getOrLoadMulti(ctx, keys, ttl, load)
+	c.opFinish(ctx, start, OpInfo{Op: OpGetOrLoadMulti, Keys: len(keys), Tier: tier, Err: err})
+	return out, err
+}
+
+func (c *Cache) getOrLoadMulti(ctx context.Context, keys []string, ttl time.Duration, load MultiLoader) (map[string][]byte, Tier, error) {
+	if load == nil {
+		return nil, TierMiss, errors.New("cachex: nil loader")
+	}
+	out, absent, tier, err := c.getMulti(ctx, keys)
 	if err != nil {
-		return nil, err
+		return nil, TierMiss, err
 	}
 	var missing []string
 	seen := make(map[string]bool, len(keys))
@@ -326,7 +390,7 @@ func (c *Cache) GetOrLoadMulti(ctx context.Context, keys []string, ttl time.Dura
 	}
 	c.st.negativeHits.Add(uint64(len(absent)))
 	if len(missing) == 0 {
-		return out, nil
+		return out, tier, nil
 	}
 	ttl = c.ttl(ttl)
 	gens := make([]uint64, len(missing))
@@ -337,11 +401,11 @@ func (c *Cache) GetOrLoadMulti(ctx context.Context, keys []string, ttl time.Dura
 	defer cancel()
 	obs := c.observeMulti(lctx, missing) // before the loader reads its source
 	start := c.cfg.clock.Now()
-	loaded, err := safeLoad(func() (map[string][]byte, error) { return load(lctx, missing) })
+	loaded, err := recoverLoad(c.cfg.events.LoaderPanic, "", func() (map[string][]byte, error) { return load(lctx, missing) })
 	c.st.loads.Add(1)
 	if err != nil {
 		c.st.loadErrors.Add(1)
-		return nil, err
+		return nil, TierLoaded, err
 	}
 	delta := int64(c.cfg.clock.Now().Sub(start))
 	for i, k := range missing {
@@ -360,14 +424,21 @@ func (c *Cache) GetOrLoadMulti(ctx context.Context, keys []string, ttl time.Dura
 			c.commit(ctx, k, envelope.Entry{Flags: envelope.FlagTombstone}, c.cfg.negativeTTL, obs[k])
 		}
 	}
-	return out, nil
+	return out, TierLoaded, nil
 }
 
 // safeLoad runs f, turning a panic into ErrLoaderPanic so one bad loader can't crash the process.
-func safeLoad[T any](f func() (T, error)) (v T, err error) {
+func (c *Cache) safeLoad(key string, f func() ([]byte, error)) ([]byte, error) {
+	return recoverLoad(c.cfg.events.LoaderPanic, key, f)
+}
+
+func recoverLoad[T any](onPanic func(string, any), key string, f func() (T, error)) (v T, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("%w: %v", ErrLoaderPanic, r)
+			if onPanic != nil {
+				onPanic(key, r)
+			}
 		}
 	}()
 	return f()
@@ -379,6 +450,9 @@ func (c *Cache) publish(ctx context.Context, msg Invalidation) {
 	}
 	if err := c.cfg.invalidator.Publish(context.WithoutCancel(ctx), msg); err != nil {
 		c.st.publishErrors.Add(1)
+		if f := c.cfg.events.PublishError; f != nil {
+			f(msg, err)
+		}
 	}
 }
 
@@ -397,42 +471,58 @@ func (c *Cache) onInvalidation(msg Invalidation) {
 // Near expiry it refreshes early (XFetch); within the stale window it serves the old
 // value and refreshes in the background. Loader errors are returned and not cached.
 func (c *Cache) GetOrLoad(ctx context.Context, key string, ttl time.Duration, load Loader) ([]byte, error) {
+	if !c.opHooks {
+		v, _, err := c.getOrLoad(ctx, key, ttl, load)
+		return v, err
+	}
+	ctx, start := c.opBegin(ctx, OpGetOrLoad, key)
+	v, tier, err := c.getOrLoad(ctx, key, ttl, load)
+	c.opFinish(ctx, start, OpInfo{Op: OpGetOrLoad, Key: key, Keys: 1, Tier: tier, Err: err})
+	return v, err
+}
+
+func (c *Cache) getOrLoad(ctx context.Context, key string, ttl time.Duration, load Loader) ([]byte, Tier, error) {
 	if err := c.check(key); err != nil {
-		return nil, err
+		return nil, TierMiss, err
 	}
 	if load == nil {
-		return nil, errors.New("cachex: nil loader")
+		return nil, TierMiss, errors.New("cachex: nil loader")
 	}
 	ttl = c.ttl(ttl)
 	now := c.nowNs()
-	if e, ok := c.lookup(ctx, key); ok {
+	if e, tier, ok := c.lookup(ctx, key); ok {
 		switch {
 		case e.Flags&envelope.FlagTombstone != 0:
 			if !e.Expired(now) {
 				c.st.negativeHits.Add(1)
-				return nil, ErrNotFound
+				return nil, TierNegative, ErrNotFound
 			}
 		case !e.Expired(now):
 			if c.earlyRefresh(e, now) {
 				c.st.earlyRefreshes.Add(1)
 				c.refreshAsync(key, ttl, load)
 			}
-			return clone(e.Value), nil
+			return clone(e.Value), tier, nil
 		case c.cfg.staleWindow > 0 && now < e.ExpireAt+int64(c.cfg.staleWindow):
 			c.st.staleServed.Add(1)
 			c.refreshAsync(key, ttl, load)
-			return clone(e.Value), nil
+			return clone(e.Value), TierStale, nil
 		}
 	}
+	// fn runs on the flight's goroutine and may outlive this call (ctx cancel), hence atomic.
+	var answered atomic.Uint32
+	answered.Store(uint32(TierLoaded)) // joiners of another caller's flight got a load
 	v, shared, err := c.flights.Do(ctx, key, func(fctx context.Context) ([]byte, error) {
 		// A flight that finished between our miss and this call may have filled the cache.
-		if v, ok, err := c.fresh(fctx, key); ok {
+		if v, tier, ok, err := c.fresh(fctx, key); ok {
+			answered.Store(uint32(tier))
 			return v, err
 		}
 		unlock, cached := c.acquireLoadLock(fctx, key)
 		defer unlock()
 		if cached {
-			if v, ok, err := c.fresh(fctx, key); ok {
+			if v, tier, ok, err := c.fresh(fctx, key); ok {
+				answered.Store(uint32(tier))
 				return v, err
 			}
 		}
@@ -441,10 +531,11 @@ func (c *Cache) GetOrLoad(ctx context.Context, key string, ttl time.Duration, lo
 	if shared {
 		c.st.loadsShared.Add(1)
 	}
+	tier := Tier(answered.Load())
 	if err != nil {
-		return nil, err
+		return nil, tier, err
 	}
-	return clone(v), nil
+	return clone(v), tier, nil
 }
 
 func (c *Cache) load(ctx context.Context, key string, ttl time.Duration, load Loader) ([]byte, error) {
@@ -453,8 +544,11 @@ func (c *Cache) load(ctx context.Context, key string, ttl time.Duration, load Lo
 	defer cancel()
 	obs := c.observe(ctx, key) // before the loader reads its source
 	start := c.cfg.clock.Now()
-	v, err := safeLoad(func() ([]byte, error) { return load(ctx) })
+	v, err := c.safeLoad(key, func() ([]byte, error) { return load(ctx) })
 	c.st.loads.Add(1)
+	if f := c.cfg.events.LoadEnd; f != nil {
+		f(ctx, key, c.cfg.clock.Now().Sub(start), err)
+	}
 	if errors.Is(err, ErrNotFound) && c.cfg.negativeTTL > 0 {
 		if c.gen(key) == gen {
 			c.commit(ctx, key, envelope.Entry{Flags: envelope.FlagTombstone}, c.cfg.negativeTTL, obs)
@@ -476,7 +570,7 @@ func (c *Cache) load(ctx context.Context, key string, ttl time.Duration, load Lo
 		c.st.loadsDiscarded.Add(1)
 		c.l1.Delete(key)
 		if c.l2 != nil && obs.cas == nil { // with CAS the racing write already beat ours in L2
-			_ = c.l2Call(func() error { return c.l2.Delete(ctx, key) })
+			_ = c.l2Call("delete", func() error { return c.l2.Delete(ctx, key) })
 		}
 	}
 	return v, nil
@@ -491,16 +585,16 @@ func (c *Cache) bump(key string) {
 }
 
 // fresh reports a live cached answer: a value, or ErrNotFound for a live tombstone.
-func (c *Cache) fresh(ctx context.Context, key string) ([]byte, bool, error) {
-	e, ok := c.lookup(ctx, key)
+func (c *Cache) fresh(ctx context.Context, key string) ([]byte, Tier, bool, error) {
+	e, tier, ok := c.lookup(ctx, key)
 	if !ok || e.Expired(c.nowNs()) {
-		return nil, false, nil
+		return nil, TierMiss, false, nil
 	}
 	if e.Flags&envelope.FlagTombstone != 0 {
 		c.st.negativeHits.Add(1)
-		return nil, true, ErrNotFound
+		return nil, TierNegative, true, ErrNotFound
 	}
-	return e.Value, true, nil
+	return e.Value, tier, true, nil
 }
 
 // acquireLoadLock takes a cross-process lock in L2 (memcached add) so only one node runs the
@@ -512,9 +606,9 @@ func (c *Cache) acquireLoadLock(ctx context.Context, key string) (unlock func(),
 		return noop, false
 	}
 	lk := lockPrefix + key
-	err := c.l2Call(func() error { return c.l2.Add(ctx, lk, []byte{1}, c.cfg.lockTTL) })
+	err := c.l2Call("add", func() error { return c.l2.Add(ctx, lk, []byte{1}, c.cfg.lockTTL) })
 	if err == nil {
-		return func() { _ = c.l2Call(func() error { return c.l2.Delete(context.WithoutCancel(ctx), lk) }) }, false
+		return func() { _ = c.l2Call("delete", func() error { return c.l2.Delete(context.WithoutCancel(ctx), lk) }) }, false
 	}
 	if !errors.Is(err, ErrNotStored) {
 		return noop, false
@@ -531,7 +625,7 @@ func (c *Cache) acquireLoadLock(ctx context.Context, key string) (unlock func(),
 		case <-deadline.C:
 			return noop, true
 		case <-tick.C:
-			if _, ok, _ := c.fresh(ctx, key); ok {
+			if _, _, ok, _ := c.fresh(ctx, key); ok {
 				return noop, true
 			}
 		}
@@ -567,24 +661,25 @@ func (c *Cache) earlyRefresh(e envelope.Entry, now int64) bool {
 	return float64(now)+gap >= float64(e.ExpireAt)
 }
 
-// lookup reads L1 then L2 and backfills L1. The returned entry may be expired (stale window).
-func (c *Cache) lookup(ctx context.Context, key string) (envelope.Entry, bool) {
+// lookup reads L1 then L2 and backfills L1, reporting which tier answered. The returned
+// entry may be expired (stale window).
+func (c *Cache) lookup(ctx context.Context, key string) (envelope.Entry, Tier, bool) {
 	return c.lookupAt(ctx, key, c.nowNs())
 }
 
-func (c *Cache) lookupAt(ctx context.Context, key string, now int64) (envelope.Entry, bool) {
+func (c *Cache) lookupAt(ctx context.Context, key string, now int64) (envelope.Entry, Tier, bool) {
 	if raw, ok := c.l1.GetAt(key, now); ok {
 		if e, err := envelope.Decode(raw); err == nil {
-			return e, true
+			return e, TierL1, true
 		}
 		c.st.l1Corrupt.Add(1)
 		c.l1.Delete(key)
 	}
 	if c.l2 == nil {
-		return envelope.Entry{}, false
+		return envelope.Entry{}, TierMiss, false
 	}
 	var raw []byte
-	err := c.l2Call(func() error {
+	err := c.l2Call("get", func() error {
 		var err error
 		raw, err = c.l2.Get(ctx, key)
 		return err
@@ -593,23 +688,23 @@ func (c *Cache) lookupAt(ctx context.Context, key string, now int64) (envelope.E
 		if errors.Is(err, ErrMiss) {
 			c.st.l2Misses.Add(1)
 		}
-		return envelope.Entry{}, false
+		return envelope.Entry{}, TierMiss, false
 	}
 	e, err := envelope.Decode(raw)
 	if err != nil {
 		c.st.decodeErrors.Add(1)
-		return envelope.Entry{}, false
+		return envelope.Entry{}, TierMiss, false
 	}
 	if e.Flags&envelope.FlagDeleted != 0 {
 		c.st.l2Misses.Add(1)
-		return envelope.Entry{}, false
+		return envelope.Entry{}, TierMiss, false
 	}
 	c.st.l2Hits.Add(1)
 	now = c.nowNs() // L2 round trip took time
 	if hold := c.l1Hold(e, now); hold > 0 {
 		c.l1.Set(key, raw, hold)
 	}
-	return e, true
+	return e, TierL2, true
 }
 
 // l1Hold is how long L1 may keep e: its remaining life (plus stale window), capped by L1 TTL.
@@ -641,7 +736,7 @@ func (c *Cache) observe(ctx context.Context, key string) observation {
 		return observation{}
 	}
 	var tok any
-	err := c.l2Call(func() error {
+	err := c.l2Call("gets", func() error {
 		var err error
 		_, tok, err = cs.Gets(ctx, key)
 		return err
@@ -671,7 +766,7 @@ func (c *Cache) observeMulti(ctx context.Context, keys []string) map[string]obse
 		return out
 	}
 	var toks map[string]any
-	if err := c.l2Call(func() error {
+	if err := c.l2Call("gets_multi", func() error {
 		var err error
 		_, toks, err = mg.GetsMulti(ctx, keys)
 		return err
@@ -699,7 +794,15 @@ func (c *Cache) commit(ctx context.Context, key string, e envelope.Entry, ttl ti
 	l2ttl := ttl + c.cfg.staleWindow
 	hold := c.cfg.l1TTL
 	if c.l2 != nil {
-		err := c.l2Call(func() error {
+		name := "set"
+		switch {
+		case obs.cas == nil:
+		case obs.present:
+			name = "cas"
+		default:
+			name = "add"
+		}
+		err := c.l2Call(name, func() error {
 			switch {
 			case obs.cas == nil:
 				return c.l2.Set(ctx, key, raw, l2ttl)
@@ -722,8 +825,8 @@ func (c *Cache) commit(ctx context.Context, key string, e envelope.Entry, ttl ti
 }
 
 // l2Call runs op through the circuit breaker. Misses, semantic errors, caller cancellation
-// and shutdown don't count as failures.
-func (c *Cache) l2Call(op func() error) error {
+// and shutdown don't count as failures. name is the Store method, reported to Events.L2Error.
+func (c *Cache) l2Call(name string, op func() error) error {
 	if !c.br.Allow() {
 		c.st.l2Skipped.Add(1)
 		return ErrL2Unavailable
@@ -740,6 +843,9 @@ func (c *Cache) l2Call(op func() error) error {
 	default:
 		c.br.Failure()
 		c.st.l2Errors.Add(1)
+		if f := c.cfg.events.L2Error; f != nil {
+			f(name, err)
+		}
 	}
 	return err
 }

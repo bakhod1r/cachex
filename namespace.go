@@ -95,7 +95,7 @@ func (n *Namespace) Invalidate(ctx context.Context) error {
 		next = c.vers.localBump(n.name, c.cfg.clock.Now())
 	} else {
 		vk := n.versionKey()
-		err := c.l2Call(func() error {
+		err := c.l2Call("incr", func() error {
 			var err error
 			next, err = c.l2.Incr(ctx, vk, 1)
 			return err
@@ -159,7 +159,7 @@ func (n *Namespace) version(ctx context.Context) (uint64, error) {
 
 func (n *Namespace) fetch(ctx context.Context) (uint64, error) {
 	var raw []byte
-	err := n.c.l2Call(func() error {
+	err := n.c.l2Call("get", func() error {
 		var err error
 		raw, err = n.c.l2.Get(ctx, n.versionKey())
 		return err
@@ -175,7 +175,7 @@ func (n *Namespace) fetch(ctx context.Context) (uint64, error) {
 		// Corrupt counter (foreign writer, bad manual edit): drop it and re-seed. Seeds are
 		// wall-clock based, so the new version never collides with an old one.
 		n.c.st.decodeErrors.Add(1)
-		if err := n.c.l2Call(func() error { return n.c.l2.Delete(ctx, n.versionKey()) }); err != nil {
+		if err := n.c.l2Call("delete", func() error { return n.c.l2.Delete(ctx, n.versionKey()) }); err != nil {
 			return 0, err
 		}
 		return n.seed(ctx)
@@ -191,7 +191,7 @@ func (n *Namespace) seed(ctx context.Context) (uint64, error) {
 	if last, ok := c.vers.get(n.name); ok && seed <= last.v {
 		seed = last.v + 1
 	}
-	err := c.l2Call(func() error {
+	err := c.l2Call("add", func() error {
 		return c.l2.Add(ctx, n.versionKey(), []byte(strconv.FormatUint(seed, 10)), 0)
 	})
 	if errors.Is(err, ErrNotStored) {
