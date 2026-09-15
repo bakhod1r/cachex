@@ -21,7 +21,7 @@ func newTest(o Options) (*Cache, *clock) {
 	if o.Shards == 0 {
 		o.Shards = 1
 	}
-	return New(o), ck
+	return newCache(o), ck
 }
 
 type evictRec struct {
@@ -246,18 +246,18 @@ func TestShardSizing(t *testing.T) {
 		{Options{MaxEntries: 64 * 16}, 16},
 	}
 	for _, tt := range tests {
-		c := New(tt.o)
+		c := newCache(tt.o)
 		if len(c.shards) != tt.want {
 			t.Errorf("%+v: shards %d want %d", tt.o, len(c.shards), tt.want)
 		}
 	}
-	if n := len(New(Options{}).shards); n < 16 || n > 256 || n&(n-1) != 0 {
+	if n := len(newCache(Options{}).shards); n < 16 || n > 256 || n&(n-1) != 0 {
 		t.Errorf("auto shards %d", n)
 	}
 }
 
 func TestConcurrencyStress(t *testing.T) {
-	c := New(Options{MaxEntries: 500, MaxBytes: 64 << 10, Shards: 8, OnEvict: func(string, Reason) {}})
+	c := newCache(Options{MaxEntries: 500, MaxBytes: 64 << 10, Shards: 8, OnEvict: func(string, Reason) {}})
 	var wg sync.WaitGroup
 	for g := 0; g < 16; g++ {
 		wg.Add(1)
@@ -291,23 +291,6 @@ func TestConcurrencyStress(t *testing.T) {
 	if s.Entries > 8*63 || s.Entries != c.Len() {
 		t.Fatalf("stats %+v len %d", s, c.Len())
 	}
-}
-
-func BenchmarkGetParallel(b *testing.B) {
-	c := New(Options{MaxEntries: 100_000})
-	keys := make([]string, 10_000)
-	for i := range keys {
-		keys[i] = "key:" + strconv.Itoa(i)
-		c.Set(keys[i], []byte("value"), 0)
-	}
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		i := 0
-		for pb.Next() {
-			c.Get(keys[i%len(keys)])
-			i++
-		}
-	})
 }
 
 func TestPurgeCallsOnEvictRemoved(t *testing.T) {
@@ -374,7 +357,7 @@ func TestLiveLen(t *testing.T) {
 }
 
 func TestSecondChanceKeepsHotKey(t *testing.T) {
-	c := New(Options{MaxEntries: 4, Shards: 1})
+	c := newCache(Options{MaxEntries: 4, Shards: 1})
 	c.Set("hot", []byte("h"), 0)
 	for i := range 100 {
 		if _, ok := c.Get("hot"); !ok {
@@ -385,7 +368,7 @@ func TestSecondChanceKeepsHotKey(t *testing.T) {
 }
 
 func TestNewEntryNotEvictedWhenAllVisited(t *testing.T) {
-	c := New(Options{MaxEntries: 3, Shards: 1})
+	c := newCache(Options{MaxEntries: 3, Shards: 1})
 	for _, k := range []string{"a", "b", "c"} {
 		c.Set(k, []byte(k), 0)
 		c.Get(k)

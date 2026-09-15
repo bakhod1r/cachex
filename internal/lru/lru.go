@@ -5,6 +5,12 @@
 // lock. At eviction a visited tail entry has its bit cleared and moves to the front
 // instead of being evicted. Hit ratio stays close to strict LRU.
 //
+// With Options.Frequency, Get and Set also record the key in a per-shard
+// count-min sketch (TinyLFU-style). When the unvisited tail entry is estimated
+// more frequent than the key being written, it gets another pass and up to
+// freqCandidates tail entries are examined; the least frequent of them is
+// evicted. The entry being written is never evicted, so read-after-write holds.
+//
 // Expiry is lazy on Get; callers that need bounded memory for expired but
 // unread entries drive Sweep from their own janitor.
 package lru
@@ -19,10 +25,21 @@ import (
 	"time"
 
 	"github.com/bakhod1r/cachex/internal/counter"
+	"github.com/bakhod1r/cachex/internal/sketch"
 )
 
 // entryOverhead is the fixed per-entry byte accounting added to len(key)+len(val).
 const entryOverhead = 64
+
+// freqCandidates bounds how many unvisited tail entries one eviction examines.
+const freqCandidates = 4
+
+// bytesPerEntryGuess sizes the sketch when only MaxBytes bounds the cache.
+const bytesPerEntryGuess = 256
+
+// minSketchCap floors per-shard sketch sizing so tiny shards don't age history
+// away every few operations (auto sharding already keeps >= 64 entries per shard).
+const minSketchCap = 64
 
 // Reason explains why an entry left the cache.
 type Reason uint8
@@ -41,6 +58,9 @@ type Options struct {
 	Shards     int                             // 0 = auto; always rounded to a power of 2
 	Now        func() int64                    // unix nanos; nil = time.Now().UnixNano
 	OnEvict    func(key string, reason Reason) // may be nil; called without shard lock held
+	// Frequency enables frequency-aware eviction (see package doc). Ignored when
+	// neither MaxEntries nor MaxBytes is set, since nothing is ever evicted.
+	Frequency bool
 }
 
 // Stats is a point-in-time snapshot; counters are summed across shards
@@ -59,6 +79,7 @@ type entry struct {
 	val       []byte
 	expiresAt int64 // 0 = never
 	size      int64
+	hash      uint64 // maphash of key, reused for sketch lookups at eviction
 	visited   atomic.Bool
 }
 
@@ -72,6 +93,7 @@ type shard struct {
 	items map[string]*list.Element
 	ll    list.List // front = MRU
 	bytes int64
+	freq  *sketch.Sketch // nil unless Options.Frequency with a bound; lock-free
 
 	hits, misses, evictions, expirations counter.Counter
 }
@@ -125,14 +147,22 @@ func New(o Options) *Cache {
 	if o.MaxBytes > 0 {
 		c.maxBytes = (o.MaxBytes + int64(n) - 1) / int64(n)
 	}
+	sketchCap := c.maxEntries
+	if sketchCap == 0 && c.maxBytes > 0 {
+		sketchCap = int(max(c.maxBytes/bytesPerEntryGuess, 1))
+	}
 	for i := range c.shards {
 		c.shards[i] = &shard{items: make(map[string]*list.Element)}
+		if o.Frequency && sketchCap > 0 {
+			c.shards[i].freq = sketch.New(max(sketchCap, minSketchCap))
+		}
 	}
 	return c
 }
 
-func (c *Cache) shardFor(key string) *shard {
-	return c.shards[maphash.String(c.seed, key)&c.mask]
+func (c *Cache) shardFor(key string) (*shard, uint64) {
+	h := maphash.String(c.seed, key)
+	return c.shards[h&c.mask], h
 }
 
 func (c *Cache) notify(evs []evicted) {
@@ -158,7 +188,10 @@ func (c *Cache) Get(key string) ([]byte, bool) { return c.GetAt(key, c.now()) }
 
 // GetAt is Get with the caller's clock reading, saving a clock call on hot paths.
 func (c *Cache) GetAt(key string, now int64) ([]byte, bool) {
-	s := c.shardFor(key)
+	s, h := c.shardFor(key)
+	if s.freq != nil {
+		s.freq.Increment(h)
+	}
 	s.mu.RLock()
 	el, ok := s.items[key]
 	if !ok {
@@ -204,7 +237,7 @@ func (c *Cache) expire(s *shard, key string, el *list.Element) {
 // value for key is removed so a stale value is never served.
 func (c *Cache) Set(key string, val []byte, ttl time.Duration) bool {
 	size := int64(len(key)+len(val)) + entryOverhead
-	s := c.shardFor(key)
+	s, h := c.shardFor(key)
 	var evs []evicted
 
 	if c.maxBytes > 0 && size > c.maxBytes {
@@ -225,6 +258,9 @@ func (c *Cache) Set(key string, val []byte, ttl time.Duration) bool {
 	cp := make([]byte, len(val))
 	copy(cp, val)
 
+	if s.freq != nil {
+		s.freq.Increment(h)
+	}
 	s.mu.Lock()
 	cur, ok := s.items[key]
 	if ok {
@@ -233,22 +269,11 @@ func (c *Cache) Set(key string, val []byte, ttl time.Duration) bool {
 		e.val, e.expiresAt, e.size = cp, exp, size
 		s.ll.MoveToFront(cur)
 	} else {
-		cur = s.ll.PushFront(&entry{key: key, val: cp, expiresAt: exp, size: size})
+		cur = s.ll.PushFront(&entry{key: key, val: cp, expiresAt: exp, size: size, hash: h})
 		s.items[key] = cur
 		s.bytes += size
 	}
-	// Evict from the tail with second chance; the entry just written is never evicted.
-	for s.ll.Len() > 1 &&
-		((c.maxEntries > 0 && s.ll.Len() > c.maxEntries) || (c.maxBytes > 0 && s.bytes > c.maxBytes)) {
-		back := s.ll.Back()
-		if e := back.Value.(*entry); back == cur || e.visited.Load() {
-			e.visited.Store(false)
-			s.ll.MoveToFront(back)
-			continue
-		}
-		e := s.removeLocked(back)
-		evs = append(evs, evicted{e.key, Capacity})
-	}
+	evs = c.evictLocked(s, cur, h, evs)
 	s.mu.Unlock()
 	if n := len(evs); n > 0 {
 		s.evictions.Add(uint64(n))
@@ -257,9 +282,53 @@ func (c *Cache) Set(key string, val []byte, ttl time.Duration) bool {
 	return true
 }
 
+// evictLocked evicts from the tail until s is within budget; caller holds s.mu.
+// Second chance: a visited tail entry is cleared and moved to front. With a
+// sketch, an unvisited tail entry more frequent than the written key (hash h) is
+// also moved to front, up to freqCandidates per eviction; then the least
+// frequent examined entry is evicted. cur, the entry just written, is never evicted.
+func (c *Cache) evictLocked(s *shard, cur *list.Element, h uint64, evs []evicted) []evicted {
+	var (
+		examined  int
+		victim    *list.Element
+		victimF   uint8
+		incomingF uint8
+	)
+	if s.freq != nil {
+		incomingF = s.freq.Estimate(h)
+	}
+	for s.ll.Len() > 1 &&
+		((c.maxEntries > 0 && s.ll.Len() > c.maxEntries) || (c.maxBytes > 0 && s.bytes > c.maxBytes)) {
+		back := s.ll.Back()
+		e := back.Value.(*entry)
+		if back == cur || e.visited.Load() {
+			e.visited.Store(false)
+			s.ll.MoveToFront(back)
+			continue
+		}
+		evict := back
+		if s.freq != nil {
+			f := s.freq.Estimate(e.hash)
+			if victim == nil || f < victimF {
+				victim, victimF = back, f
+			}
+			examined++
+			if f > incomingF && examined < freqCandidates {
+				s.ll.MoveToFront(back)
+				continue
+			}
+			evict = victim
+			examined, victim = 0, nil
+		}
+		e = s.removeLocked(evict)
+		evs = append(evs, evicted{e.key, Capacity})
+	}
+	return evs
+}
+
 // Delete removes key and reports whether it was present.
 func (c *Cache) Delete(key string) bool {
-	s := c.shardFor(key)
+	s, _ := c.shardFor(key)
 	s.mu.Lock()
 	el, ok := s.items[key]
 	if ok {
