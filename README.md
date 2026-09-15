@@ -44,7 +44,8 @@ defer c.Close() // also closes the store
 ```
 
 Reads go L1 -> L2 (backfilling L1) -> miss. `Set` writes L2 then L1. `Delete` removes from
-both and returns L2 errors.
+both and returns L2 errors. With a `CASStore` (memcached, memstore) `Delete` writes a short-lived
+marker to L2 instead of removing the key; reads treat it as absent.
 
 ## GetOrLoad and stampede protection
 
@@ -175,6 +176,13 @@ L2 is the shared source of truth; L1 is per process.
   `Invalidate` are broadcast and every subscribed process drops its L1 copies immediately.
   Implement `cachex.Invalidator` over Redis pub/sub, NATS, etc. (`memstore.NewBus()` is an
   in-process implementation). Delivery is best effort; the TTL bounds still hold.
+- **Loads never undo a `Delete`/`Set`.** A `GetOrLoad` whose loader read the source before a
+  `Delete` or `Set` does not write its value back. Within one process this always holds. Across
+  processes it needs a store implementing `cachex.CASStore` (memcached and memstore do): the load
+  publishes with `add`/`cas` against the L2 state it saw before calling the loader, and `Delete`
+  leaves a marker for `WithDeleteMarkerTTL` (default 2 x load timeout). A loader that ignores its
+  context and outlives the marker TTL is not covered. `GetOrLoadMulti` has the per-process guard only.
+  Without `CASStore`, a load on node A may re-cache a value that node B deleted, until its TTL.
 
 Redis pub/sub adapter (separate module):
 
@@ -202,6 +210,7 @@ c, err := cachex.New(cachex.WithL2(store), cachex.WithInvalidator(inv))
 | `WithVersionTTL(d)` | `2s` | Namespace version cache; invalidation visibility bound |
 | `WithSweepInterval(d)` | `1s` | Expired-entry janitor (0 = lazy expiry only) |
 | `WithNegativeTTL(d)` | `0` (off) | Cache a loader's `ErrNotFound` |
+| `WithDeleteMarkerTTL(d)` | `2 x load timeout` | L2 Delete marker lifetime (`CASStore` only); must exceed load timeout |
 | `WithDistributedLock(ttl, poll)` | off | One loader per key across processes |
 | `WithInvalidator(Invalidator)` | none | Broadcast invalidations between processes |
 | `WithClock(Clock)` | wall clock | Injectable clock for tests |
@@ -229,4 +238,5 @@ Other modules: `cd prometheus && go test -race ./...`; Redis adapter:
 `REDIS_ADDR=localhost:6379 go test -race -tags=integration ./...` inside `redis/`; benchmarks against other Go caches
 live in `bench/` (see `bench/RESULTS.md`).
 
-Custom `Store` implementations can run the conformance suite: `storetest.Run(t, newStore, advance)`.
+Custom `Store` implementations can run the conformance suite: `storetest.Run(t, newStore, advance)`. Implement
+`cachex.CASStore` too (the suite then checks it) to get the cross-process Delete guarantee.

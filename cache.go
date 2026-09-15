@@ -63,6 +63,12 @@ func New(opts ...Option) (*Cache, error) {
 	if cfg.rand == nil {
 		cfg.rand = rand.Float64
 	}
+	if cfg.markerTTL == 0 {
+		cfg.markerTTL = 2 * cfg.loadTimeout
+	}
+	if cfg.markerTTL <= cfg.loadTimeout {
+		return nil, fmt.Errorf("cachex: delete marker TTL %v must exceed load timeout %v", cfg.markerTTL, cfg.loadTimeout)
+	}
 	c := &Cache{cfg: cfg, l2: cfg.l2, refreshSem: make(chan struct{}, cfg.maxRefreshes), genSeed: maphash.MakeSeed()}
 	c.l1 = lru.New(lru.Options{
 		MaxEntries: cfg.l1MaxEntries,
@@ -133,7 +139,12 @@ func (c *Cache) Delete(ctx context.Context, key string) error {
 	c.flights.Forget(key) // later loads must not join a flight that read pre-Delete data
 	c.l1.Delete(key)
 	var err error
-	if c.l2 != nil {
+	if _, ok := c.l2.(CASStore); ok {
+		// Marker instead of delete: an in-flight load's Add/CompareAndSwap then fails.
+		now := c.nowNs()
+		raw := envelope.Encode(envelope.Entry{Flags: envelope.FlagDeleted, StoredAt: now, ExpireAt: now})
+		err = c.l2Call(func() error { return c.l2.Set(ctx, key, raw, c.cfg.markerTTL) })
+	} else if c.l2 != nil {
 		err = c.l2Call(func() error { return c.l2.Delete(ctx, key) })
 	}
 	c.l1.Delete(key) // closes the race with a concurrent backfill from L2
@@ -235,6 +246,10 @@ func (c *Cache) accept(key string, raw []byte, now int64) ([]byte, error) {
 	e, err := envelope.Decode(raw)
 	if err != nil {
 		c.st.decodeErrors.Add(1)
+		return nil, ErrMiss
+	}
+	if e.Flags&envelope.FlagDeleted != 0 {
+		c.st.l2Misses.Add(1)
 		return nil, ErrMiss
 	}
 	c.st.l2Hits.Add(1)
@@ -415,11 +430,14 @@ func (c *Cache) load(ctx context.Context, key string, ttl time.Duration, load Lo
 	gen := c.gen(key)
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.loadTimeout)
 	defer cancel()
+	obs := c.observe(ctx, key) // before the loader reads its source
 	start := c.cfg.clock.Now()
 	v, err := safeLoad(func() ([]byte, error) { return load(ctx) })
 	c.st.loads.Add(1)
 	if errors.Is(err, ErrNotFound) && c.cfg.negativeTTL > 0 {
-		c.store(ctx, key, envelope.Entry{Flags: envelope.FlagTombstone}, c.cfg.negativeTTL)
+		if c.gen(key) == gen {
+			c.commit(ctx, key, envelope.Entry{Flags: envelope.FlagTombstone}, c.cfg.negativeTTL, obs)
+		}
 		return nil, err
 	}
 	if err != nil {
@@ -431,12 +449,12 @@ func (c *Cache) load(ctx context.Context, key string, ttl time.Duration, load Lo
 		c.st.loadsDiscarded.Add(1)
 		return v, nil // Set/Delete raced the loader: caller gets v, cache keeps the newer write
 	}
-	c.store(ctx, key, envelope.Entry{Value: v, Delta: int64(delta)}, ttl)
+	c.commit(ctx, key, envelope.Entry{Value: v, Delta: int64(delta)}, ttl, obs)
 	if c.gen(key) != gen {
 		// Set/Delete landed between the check and our write; undo so ours cannot outlive it.
 		c.st.loadsDiscarded.Add(1)
 		c.l1.Delete(key)
-		if c.l2 != nil {
+		if c.l2 != nil && obs.cas == nil { // with CAS the racing write already beat ours in L2
 			_ = c.l2Call(func() error { return c.l2.Delete(ctx, key) })
 		}
 	}
@@ -562,6 +580,10 @@ func (c *Cache) lookupAt(ctx context.Context, key string, now int64) (envelope.E
 		c.st.decodeErrors.Add(1)
 		return envelope.Entry{}, false
 	}
+	if e.Flags&envelope.FlagDeleted != 0 {
+		c.st.l2Misses.Add(1)
+		return envelope.Entry{}, false
+	}
 	c.st.l2Hits.Add(1)
 	now = c.nowNs() // L2 round trip took time
 	if hold := c.l1Hold(e, now); hold > 0 {
@@ -581,6 +603,41 @@ func (c *Cache) l1Hold(e envelope.Entry, now int64) time.Duration {
 }
 
 func (c *Cache) store(ctx context.Context, key string, e envelope.Entry, ttl time.Duration) {
+	c.commit(ctx, key, e, ttl, observation{})
+}
+
+// observation is the L2 state a load saw before calling its loader.
+type observation struct {
+	cas     CASStore // nil: publish with plain Set
+	present bool
+	token   any
+}
+
+// observe snapshots key in a CASStore. Any failure falls back to plain Set, which the
+// in-process generation check still guards.
+func (c *Cache) observe(ctx context.Context, key string) observation {
+	cs, ok := c.l2.(CASStore)
+	if !ok {
+		return observation{}
+	}
+	var tok any
+	err := c.l2Call(func() error {
+		var err error
+		_, tok, err = cs.Gets(ctx, key)
+		return err
+	})
+	switch {
+	case err == nil:
+		return observation{cas: cs, present: true, token: tok}
+	case errors.Is(err, ErrMiss):
+		return observation{cas: cs}
+	}
+	return observation{}
+}
+
+// commit writes e to L2 then L1. With a CAS observation the L2 write is conditional; if
+// another writer (Set, Delete marker, newer load) got there first, nothing is cached.
+func (c *Cache) commit(ctx context.Context, key string, e envelope.Entry, ttl time.Duration, obs observation) {
 	now := c.nowNs()
 	if j := c.cfg.ttlJitter; j > 0 {
 		ttl -= time.Duration(float64(ttl) * j * c.cfg.rand())
@@ -588,14 +645,29 @@ func (c *Cache) store(ctx context.Context, key string, e envelope.Entry, ttl tim
 	e.StoredAt = now
 	e.ExpireAt = now + int64(ttl)
 	raw := envelope.Encode(e)
+	l2ttl := ttl + c.cfg.staleWindow
 	hold := c.cfg.l1TTL
 	if c.l2 != nil {
-		err := c.l2Call(func() error { return c.l2.Set(ctx, key, raw, ttl+c.cfg.staleWindow) })
+		err := c.l2Call(func() error {
+			switch {
+			case obs.cas == nil:
+				return c.l2.Set(ctx, key, raw, l2ttl)
+			case obs.present:
+				return obs.cas.CompareAndSwap(ctx, key, raw, obs.token, l2ttl)
+			default:
+				return c.l2.Add(ctx, key, raw, l2ttl)
+			}
+		})
+		if obs.cas != nil && (errors.Is(err, ErrNotStored) || errors.Is(err, ErrMiss)) {
+			c.st.loadsDiscarded.Add(1)
+			c.l1.Delete(key)
+			return
+		}
 		if err != nil {
 			hold = c.cfg.degradedL1TTL
 		}
 	}
-	c.l1.Set(key, raw, min(hold, ttl+c.cfg.staleWindow))
+	c.l1.Set(key, raw, min(hold, l2ttl))
 }
 
 // l2Call runs op through the circuit breaker. Misses, semantic errors, caller cancellation

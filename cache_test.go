@@ -129,8 +129,8 @@ func TestDeleteBothTiers(t *testing.T) {
 	if err := e.c.Delete(ctx, "k"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.l2.Get(ctx, "k"); !errors.Is(err, cachex.ErrMiss) {
-		t.Fatalf("L2 still has key: %v", err)
+	if _, err := secondNode(t, e).Get(ctx, "k"); !errors.Is(err, cachex.ErrMiss) {
+		t.Fatalf("L2 still serves key to other nodes: %v", err)
 	}
 	if _, err := e.c.Get(ctx, "k"); !errors.Is(err, cachex.ErrMiss) {
 		t.Fatalf("want miss, got %v", err)
@@ -414,7 +414,7 @@ func TestDeleteDuringLoadDoesNotResurrectStaleValue(t *testing.T) {
 	if v, err := e.c.Get(ctx, "k"); !errors.Is(err, cachex.ErrMiss) {
 		t.Fatalf("stale value cached after Delete: %q %v", v, err)
 	}
-	if _, err := e.l2.Get(ctx, "k"); !errors.Is(err, cachex.ErrMiss) {
+	if _, err := secondNode(t, e).Get(ctx, "k"); !errors.Is(err, cachex.ErrMiss) {
 		t.Fatalf("stale value written to L2 after Delete: %v", err)
 	}
 }

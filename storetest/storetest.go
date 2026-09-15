@@ -146,6 +146,45 @@ func Run(t *testing.T, newStore func(t *testing.T) cachex.Store, advance func(d 
 		}
 	})
 
+	t.Run("CompareAndSwap", func(t *testing.T) {
+		s := fresh(t)
+		cs, ok := s.(cachex.CASStore)
+		if !ok {
+			t.Skip("store does not implement cachex.CASStore")
+		}
+		if _, _, err := cs.Gets(ctx, "k"); !errors.Is(err, cachex.ErrMiss) {
+			t.Fatalf("Gets missing: %v, want ErrMiss", err)
+		}
+		mustSet(t, s, "k", "v1", 0)
+		v, tok, err := cs.Gets(ctx, "k")
+		if err != nil || string(v) != "v1" {
+			t.Fatalf("Gets = %q, %v", v, err)
+		}
+		if err := cs.CompareAndSwap(ctx, "k", []byte("v2"), tok, 0); err != nil {
+			t.Fatalf("CAS with fresh token: %v", err)
+		}
+		expectVal(t, s, "k", "v2")
+		if err := cs.CompareAndSwap(ctx, "k", []byte("v3"), tok, 0); !errors.Is(err, cachex.ErrNotStored) {
+			t.Fatalf("CAS with used token: %v, want ErrNotStored", err)
+		}
+		_, tok, _ = cs.Gets(ctx, "k")
+		mustSet(t, s, "k", "other", 0)
+		if err := cs.CompareAndSwap(ctx, "k", []byte("v4"), tok, 0); !errors.Is(err, cachex.ErrNotStored) {
+			t.Fatalf("CAS after concurrent Set: %v, want ErrNotStored", err)
+		}
+		expectVal(t, s, "k", "other")
+		_, tok, _ = cs.Gets(ctx, "k")
+		if err := s.Delete(ctx, "k"); err != nil {
+			t.Fatal(err)
+		}
+		if err := cs.CompareAndSwap(ctx, "k", []byte("v5"), tok, 0); !errors.Is(err, cachex.ErrMiss) && !errors.Is(err, cachex.ErrNotStored) {
+			t.Fatalf("CAS on deleted key: %v, want ErrMiss or ErrNotStored", err)
+		}
+		if _, err := s.Get(ctx, "k"); !errors.Is(err, cachex.ErrMiss) {
+			t.Fatalf("CAS resurrected deleted key: %v", err)
+		}
+	})
+
 	t.Run("ConcurrentSetGet", func(t *testing.T) {
 		s := fresh(t)
 		const workers = 50

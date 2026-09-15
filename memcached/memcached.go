@@ -42,7 +42,10 @@ type Store struct {
 	closed atomic.Bool
 }
 
-var _ cachex.Store = (*Store)(nil)
+var (
+	_ cachex.Store    = (*Store)(nil)
+	_ cachex.CASStore = (*Store)(nil)
+)
 
 // New builds a Store. It does not dial; connections are lazy.
 func New(c Config) (*Store, error) {
@@ -145,6 +148,36 @@ func (s *Store) Add(ctx context.Context, key string, val []byte, ttl time.Durati
 	}
 	defer done()
 	return mapErr(s.client.Add(&memcache.Item{Key: normalizeKey(s.prefix, key), Value: val, Expiration: expiration(ttl)}))
+}
+
+// Gets returns the value and a CAS token (the fetched item).
+func (s *Store) Gets(ctx context.Context, key string) ([]byte, any, error) {
+	done, err := s.begin(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer done()
+	it, err := s.client.Get(normalizeKey(s.prefix, key))
+	if err != nil {
+		return nil, nil, mapErr(err)
+	}
+	return it.Value, it, nil
+}
+
+// CompareAndSwap stores val only if key is unchanged since Gets; ErrNotStored on conflict.
+func (s *Store) CompareAndSwap(ctx context.Context, key string, val []byte, token any, ttl time.Duration) error {
+	it, ok := token.(*memcache.Item)
+	if !ok || it == nil || it.Key != normalizeKey(s.prefix, key) {
+		return fmt.Errorf("memcached: CompareAndSwap token not from Gets for %q", key)
+	}
+	done, err := s.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer done()
+	next := *it // keep the server-assigned CAS id, replace value and TTL
+	next.Value, next.Expiration = val, expiration(ttl)
+	return mapErr(s.client.CompareAndSwap(&next))
 }
 
 // Delete treats a missing key as success.
@@ -251,7 +284,7 @@ func mapErr(err error) error {
 	switch {
 	case errors.Is(err, memcache.ErrCacheMiss):
 		return cachex.ErrMiss
-	case errors.Is(err, memcache.ErrNotStored):
+	case errors.Is(err, memcache.ErrNotStored), errors.Is(err, memcache.ErrCASConflict):
 		return cachex.ErrNotStored
 	case errors.Is(err, memcache.ErrMalformedKey):
 		return cachex.ErrInvalidKey

@@ -33,6 +33,17 @@ type MultiGetter interface {
 	GetMulti(ctx context.Context, keys []string) (map[string][]byte, error)
 }
 
+// CASStore is an optional Store capability. With it, loads publish with compare-and-swap and
+// Delete leaves a short-lived marker, so a load that read its source before a Delete on any
+// node cannot write the old value back afterwards. Without it that guard is per process only.
+type CASStore interface {
+	// Gets returns the value and an opaque token for CompareAndSwap; ErrMiss when absent.
+	Gets(ctx context.Context, key string) (val []byte, token any, err error)
+	// CompareAndSwap stores val only if key is unchanged since Gets returned token.
+	// It returns ErrNotStored when the key changed and ErrMiss when it is gone.
+	CompareAndSwap(ctx context.Context, key string, val []byte, token any, ttl time.Duration) error
+}
+
 // Invalidation tells other processes to drop L1 copies.
 type Invalidation struct {
 	Keys      []string // single keys removed with Delete

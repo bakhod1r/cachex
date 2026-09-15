@@ -24,7 +24,8 @@ import (
 // Header size and flag bits.
 const (
 	HeaderSize          = 32
-	FlagTombstone uint8 = 1
+	FlagTombstone uint8 = 1 // cached absence (negative cache)
+	FlagDeleted   uint8 = 2 // Delete marker: reads treat the key as absent
 
 	magic   = 0xCA
 	version = 0x01

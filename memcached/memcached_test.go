@@ -84,6 +84,7 @@ func TestMapErr(t *testing.T) {
 	}{
 		{memcache.ErrCacheMiss, cachex.ErrMiss},
 		{memcache.ErrNotStored, cachex.ErrNotStored},
+		{memcache.ErrCASConflict, cachex.ErrNotStored},
 		{memcache.ErrMalformedKey, cachex.ErrInvalidKey},
 		{fmt.Errorf("memcache: unexpected response line from %q: %q", "set", "SERVER_ERROR object too large for cache\r\n"), cachex.ErrValueTooLarge},
 		{memcache.ErrNoServers, cachex.ErrL2Unavailable},

@@ -12,11 +12,15 @@ import (
 	"github.com/bakhod1r/cachex"
 )
 
-var _ cachex.Store = (*Store)(nil)
+var (
+	_ cachex.Store    = (*Store)(nil)
+	_ cachex.CASStore = (*Store)(nil)
+)
 
 type entry struct {
 	val    []byte
 	expiry time.Time // zero = never
+	cas    uint64    // changes on every write
 }
 
 // Store is a mutex-protected map with expiry. Safe for concurrent use.
@@ -26,6 +30,7 @@ type Store struct {
 
 	mu      sync.Mutex
 	data    map[string]entry
+	nextCAS uint64
 	failN   int
 	failErr error
 	down    bool
@@ -93,7 +98,8 @@ func (s *Store) live(key string) (entry, bool) {
 }
 
 func (s *Store) put(key string, val []byte, ttl time.Duration) {
-	e := entry{val: append([]byte{}, val...)}
+	s.nextCAS++
+	e := entry{val: append([]byte{}, val...), cas: s.nextCAS}
 	if ttl > 0 {
 		e.expiry = s.now().Add(ttl)
 	}
@@ -146,6 +152,36 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+// Gets returns the value and a token for CompareAndSwap.
+func (s *Store) Gets(ctx context.Context, key string) ([]byte, any, error) {
+	defer s.mu.Unlock()
+	if err := s.begin(ctx); err != nil {
+		return nil, nil, err
+	}
+	e, ok := s.live(key)
+	if !ok {
+		return nil, nil, cachex.ErrMiss
+	}
+	return append([]byte{}, e.val...), e.cas, nil
+}
+
+// CompareAndSwap stores val only if key has not been written since Gets returned token.
+func (s *Store) CompareAndSwap(ctx context.Context, key string, val []byte, token any, ttl time.Duration) error {
+	defer s.mu.Unlock()
+	if err := s.begin(ctx); err != nil {
+		return err
+	}
+	e, ok := s.live(key)
+	if !ok {
+		return cachex.ErrMiss
+	}
+	if tok, _ := token.(uint64); tok != e.cas {
+		return cachex.ErrNotStored
+	}
+	s.put(key, val, ttl)
+	return nil
+}
+
 // ErrNotNumeric is returned by Incr when the stored value is not a decimal uint64.
 var ErrNotNumeric = errors.New("memstore: value is not a decimal counter")
 
@@ -165,6 +201,8 @@ func (s *Store) Incr(ctx context.Context, key string, delta uint64) (uint64, err
 	}
 	n += delta // wraps like memcached
 	e.val = strconv.AppendUint(nil, n, 10)
+	s.nextCAS++
+	e.cas = s.nextCAS
 	s.data[key] = e // keeps expiry
 	return n, nil
 }

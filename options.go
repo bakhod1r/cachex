@@ -23,6 +23,7 @@ type config struct {
 	ttlJitter     float64
 	lockTTL       time.Duration
 	lockPoll      time.Duration
+	markerTTL     time.Duration // 0 = 2 * loadTimeout
 	invalidator   Invalidator
 	clock         Clock
 	rand          func() float64
@@ -129,6 +130,13 @@ func WithBeta(b float64) Option {
 // WithLoadTimeout bounds each loader call. Default 5s.
 func WithLoadTimeout(d time.Duration) Option {
 	return positive("load timeout", d, func(c *config) { c.loadTimeout = d })
+}
+
+// WithDeleteMarkerTTL sets how long Delete leaves a marker in L2 when the store implements
+// CASStore. A load that read its source before the Delete fails to publish while the marker
+// lives, so the TTL must exceed the load timeout. Default 2 * load timeout.
+func WithDeleteMarkerTTL(d time.Duration) Option {
+	return positive("delete marker TTL", d, func(c *config) { c.markerTTL = d })
 }
 
 // WithVersionTTL sets how long a namespace version is cached locally, which is the

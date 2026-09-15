@@ -167,3 +167,28 @@ func TestE2EGetMultiAndDistributedLock(t *testing.T) {
 		t.Fatalf("loader ran %d times across instances with distributed lock, want 1", n)
 	}
 }
+
+func TestE2ECrossNodeDeleteDuringLoad(t *testing.T) {
+	a, b := newPair(t)
+	ctx := context.Background()
+	started, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = a.GetOrLoad(ctx, "race", time.Minute, func(context.Context) ([]byte, error) {
+			close(started)
+			<-release
+			return []byte("old"), nil // read from the source before b's Delete
+		})
+	}()
+	<-started
+	if err := b.Delete(ctx, "race"); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	<-done
+	for name, c := range map[string]*cachex.Cache{"a": a, "b": b} {
+		if v, err := c.Get(ctx, "race"); !errors.Is(err, cachex.ErrMiss) {
+			t.Fatalf("node %s: pre-Delete value survived on memcached: %q %v", name, v, err)
+		}
+	}
+}
