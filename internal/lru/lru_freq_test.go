@@ -135,3 +135,25 @@ func TestFrequencyRaceStress(t *testing.T) {
 		t.Fatalf("Len %d > cap", n)
 	}
 }
+
+// A saturated hot key skips sketch work on Get, but must count again once the sketch ages.
+func TestFrequencySaturatedSkipResumesAfterAging(t *testing.T) {
+	c := New(Options{MaxEntries: 64, Shards: 1, Frequency: true})
+	c.Set("hot", []byte("h"), 0)
+	for range 40 {
+		c.Get("hot")
+	}
+	s := c.shards[0]
+	_, h := c.shardFor("hot")
+	if got := s.freq.Estimate(h); got != 15 {
+		t.Fatalf("estimate %d, want saturated 15", got)
+	}
+	for i := 0; s.freq.Estimate(h) == 15; i++ { // drive aging with other keys' increments
+		c.Get("miss" + strconv.Itoa(i))
+	}
+	aged := s.freq.Estimate(h)
+	c.Get("hot")
+	if got := s.freq.Estimate(h); got != aged+1 {
+		t.Fatalf("estimate after aging+Get = %d, want %d", got, aged+1)
+	}
+}

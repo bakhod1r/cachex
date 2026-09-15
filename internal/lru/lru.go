@@ -83,6 +83,9 @@ type entry struct {
 	first   item  // backing storage for the first item: a new key costs one allocation
 	size    int64 // guarded by shard.mu
 	visited atomic.Bool
+	// satEpoch is 1 + the sketch epoch at which Get saw this key's counters saturated
+	// (0 = not seen); while it matches, Get skips the sketch.
+	satEpoch atomic.Uint64
 
 	prev, next *entry // intrusive list links; owned by the shard's entryList
 	list       *entryList
@@ -201,10 +204,10 @@ func (c *Cache) Get(key string) ([]byte, bool) { return c.GetAt(key, c.now()) }
 // GetAt is Get with the caller's clock reading, saving a clock call on hot paths.
 func (c *Cache) GetAt(key string, now int64) ([]byte, bool) {
 	s, h := c.shardFor(key)
-	if s.freq != nil {
-		s.freq.Increment(h)
-	}
 	e := s.lookup(key, h)
+	if s.freq != nil {
+		s.touch(e, h)
+	}
 	if e == nil {
 		s.misses.Add(1)
 		return nil, false
@@ -220,6 +223,18 @@ func (c *Cache) GetAt(key string, now int64) ([]byte, bool) {
 	}
 	s.hits.Add(1)
 	return it.val, true
+}
+
+// touch records a read of hash h (entry e, nil on a miss) in the sketch, skipping
+// the counter reads when e was already saturated in the current sketch epoch.
+func (s *shard) touch(e *entry, h uint64) {
+	ep := s.freq.Epoch() + 1
+	if e != nil && e.satEpoch.Load() == ep {
+		return
+	}
+	if s.freq.Increment(h) && e != nil {
+		e.satEpoch.Store(ep)
+	}
 }
 
 // expire removes e if it is still the stored, expired entry for its key.

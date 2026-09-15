@@ -130,3 +130,29 @@ func BenchmarkEstimate(b *testing.B) {
 		_ = s.Estimate(uint64(i) * 0x9e3779b97f4a7c15)
 	}
 }
+
+func TestIncrementReportsSaturationAndEpochAdvances(t *testing.T) {
+	s := New(1000)
+	k := h(7)
+	for i := range 15 {
+		if s.Increment(k) {
+			t.Fatalf("saturated after %d increments, want 15", i+1)
+		}
+	}
+	if !s.Increment(k) {
+		t.Fatal("Increment on a saturated key returned false")
+	}
+	e := s.Epoch()
+	s.halve()
+	if s.Epoch() == e {
+		t.Fatal("halve did not advance Epoch")
+	}
+	if s.Increment(k) {
+		t.Fatal("key still reported saturated after halving")
+	}
+	e = s.Epoch()
+	s.Reset()
+	if s.Epoch() == e {
+		t.Fatal("Reset did not advance Epoch")
+	}
+}

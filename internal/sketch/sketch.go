@@ -36,6 +36,7 @@ type Sketch struct {
 	sampleSize int64
 	additions  atomic.Int64
 	aging      atomic.Bool
+	epoch      atomic.Uint64 // advanced before each halving and on Reset
 }
 
 // New sizes the sketch for about capacity distinct hot keys. capacity < 1 is treated as 1.
@@ -77,9 +78,15 @@ func (s *Sketch) Estimate(hash uint64) uint8 {
 	return m
 }
 
+// Epoch changes whenever counters may have decreased (halving or Reset). A caller
+// that saw Increment report saturation at epoch e may skip Increment for that hash
+// while Epoch still returns e: the call would be a no-op.
+func (s *Sketch) Epoch() uint64 { return s.epoch.Load() }
+
 // Increment adds one to hash's counters that are at the current minimum
-// (conservative update), saturating at 15. Saturated keys cost no writes.
-func (s *Sketch) Increment(hash uint64) {
+// (conservative update), saturating at 15. Saturated keys cost no writes, and
+// Increment returns true for them.
+func (s *Sketch) Increment(hash uint64) bool {
 	var ws [depth]uint64
 	var offs [depth]uint
 	m := uint64(counterMask)
@@ -88,7 +95,7 @@ func (s *Sketch) Increment(hash uint64) {
 		m = min(m, s.words[ws[r]].Load()>>offs[r]&counterMask)
 	}
 	if m == counterMask {
-		return
+		return true
 	}
 	for r := range depth {
 		p := &s.words[ws[r]]
@@ -107,9 +114,11 @@ func (s *Sketch) Increment(hash uint64) {
 		s.additions.Store(0)
 		s.aging.Store(false)
 	}
+	return false
 }
 
 func (s *Sketch) halve() {
+	s.epoch.Add(1)
 	for i := range s.words {
 		p := &s.words[i]
 		for {
@@ -127,4 +136,5 @@ func (s *Sketch) Reset() {
 		s.words[i].Store(0)
 	}
 	s.additions.Store(0)
+	s.epoch.Add(1)
 }

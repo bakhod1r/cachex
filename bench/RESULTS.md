@@ -58,7 +58,19 @@ Where cachex stands in-process: 2nd on MixedZipf throughput (after otter, ahead 
 bigcache, freecache, theine), 3rd on hit ratio, tied 1st on stampede. On pure hits otter is still
 faster: cachex's `Get` copies the value (1 alloc); with `GetView` the gap is ~42 vs ~25 ns, most
 of it sketch counter writes on every read (otter batches reads through a lossy buffer instead).
-Tried and dropped: sampling the sketch's aging counter (no measurable change).
+Tried and dropped: sampling the sketch's aging counter (no measurable change); an otter-style
+lossy per-shard read buffer (16 atomic slots, `TryLock` drain) in front of the sketch, which was
+slower (lru `GetParallel/freq` ~65 to ~77 ns/op interleaved A/B, hit ratio -0.05 pt): hot keys
+saturate their 4-bit counters, so `Increment` is already read-only for them and the buffer's CAS
+added the shared-cache-line writes it was meant to remove.
+
+Profile of `ParallelGetHitView` (49 ns/op under profiling): `lru.lookup` 17%, `sketch.Increment`
+16% (almost all in the four counter-word loads, returning early on saturated keys),
+`counter.Add` 12%. Kept: an entry remembers the sketch epoch (advanced on each halving and
+`Reset`) in which its counters were seen saturated, and `Get` skips the sketch while the epoch
+matches. Interleaved A/B, old vs new binary, same session: `GetView` 38.7 to 35.9 ns/op (-7%,
+p=0.000 n=8), MixedZipf 120.0 to 115.8 ns/op (-3.5%, p=0.004 n=6), `ParallelGetHit` and hit
+ratio (77.69%) unchanged.
 
 - bigcache and freecache are byte-bounded; sized at ~128 B per entry to hold about the same count.
 - `BenchmarkStampede` uses the library's loading API where one exists (cachex `GetOrLoad`, otter
