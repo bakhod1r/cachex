@@ -43,6 +43,26 @@ if err != nil { return err }
 defer c.Close() // also closes the store
 ```
 
+With Redis (Redis 6+, standalone or Cluster):
+
+```go
+import cachexredis "github.com/bakhod1r/cachex/redis"
+
+rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+store, err := cachexredis.NewStore(cachexredis.StoreConfig{Client: rdb, KeyPrefix: "app:"})
+if err != nil { return err }
+
+inv, err := cachexredis.New(cachexredis.Config{Client: rdb}) // optional: same Redis for invalidation
+c, err := cachex.New(cachex.WithL2(store), cachex.WithInvalidator(inv))
+```
+
+The Redis store supports everything the memcached one does: `GetMulti` (one `MGET`),
+compare-and-swap for cross-process `Delete` safety, `Incr` for namespace versions, and the
+distributed load lock. Each value carries an 8-byte version header used as the CAS token, so
+don't write to the store's keys with other clients. Unlike memcached, keys are binary-safe and
+used as-is, timeouts honor the request `context`, and a Cluster client works because every
+operation touches one key.
+
 **Timeouts:** the memcached client has no context support. A context is checked only before an
 operation starts; once it is on the wire it is bounded by `Config.Timeout`, not by your deadline.
 Keep `Timeout` well below your request budget, and set `MaxConcurrency` so a slow memcached fails

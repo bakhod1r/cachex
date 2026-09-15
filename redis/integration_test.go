@@ -12,6 +12,7 @@ import (
 
 	"github.com/bakhod1r/cachex"
 	"github.com/bakhod1r/cachex/memstore"
+	"github.com/bakhod1r/cachex/storetest"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -115,5 +116,73 @@ func TestIntegrationCacheE2E(t *testing.T) {
 			t.Fatalf("b still serves stale L1 after 2s: err=%v", err)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestIntegrationStoreConformance(t *testing.T) {
+	cl := client(t)
+	storetest.Run(t, func(t *testing.T) cachex.Store {
+		s, err := NewStore(StoreConfig{Client: cl, KeyPrefix: fmt.Sprintf("cachex:it:%d:", time.Now().UnixNano())})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}, nil)
+}
+
+func TestIntegrationRedisAsL2AndInvalidator(t *testing.T) {
+	cl := client(t)
+	prefix := fmt.Sprintf("cachex:e2e:%d:", time.Now().UnixNano())
+	channel := channelName(t)
+	mk := func() *cachex.Cache {
+		st, err := NewStore(StoreConfig{Client: cl, KeyPrefix: prefix})
+		if err != nil {
+			t.Fatal(err)
+		}
+		inv, err := New(Config{Client: cl, Channel: channel})
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := cachex.New(cachex.WithL2(st), cachex.WithInvalidator(inv), cachex.WithL1TTL(time.Hour),
+			cachex.WithDistributedLock(2*time.Second, 10*time.Millisecond))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = c.Close() })
+		return c
+	}
+	a, b := mk(), mk()
+	ctx := context.Background()
+
+	if err := a.Set(ctx, "k", []byte("v1"), time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := b.Get(ctx, "k"); err != nil || string(v) != "v1" {
+		t.Fatalf("b reads through Redis L2: %q %v", v, err)
+	}
+	if err := a.Delete(ctx, "k"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := b.Get(ctx, "k"); errors.Is(err, cachex.ErrMiss) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("b still serves deleted key from L1")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	got, err := b.GetMulti(ctx, []string{"k", "none"})
+	if err != nil || len(got) != 0 {
+		t.Fatalf("GetMulti after delete: %q %v", got, err)
+	}
+	v, err := a.GetOrLoad(ctx, "loaded", time.Minute, func(context.Context) ([]byte, error) { return []byte("L"), nil })
+	if err != nil || string(v) != "L" {
+		t.Fatalf("GetOrLoad: %q %v", v, err)
+	}
+	if v, err := b.Get(ctx, "loaded"); err != nil || string(v) != "L" {
+		t.Fatalf("loaded value visible to b: %q %v", v, err)
 	}
 }
