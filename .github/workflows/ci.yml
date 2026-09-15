@@ -28,7 +28,7 @@ jobs:
       - name: govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          for m in . prometheus otel redis nats kafka rabbitmq bench; do
+          for m in . prometheus otel zstd redis nats kafka rabbitmq bench; do
             echo "== $m"; (cd "$m" && govulncheck ./...)
           done
 
@@ -54,7 +54,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [".", "prometheus", "otel", "redis", "bench", "nats", "kafka", "rabbitmq"]
+        module: [".", "prometheus", "otel", "zstd", "redis", "bench", "nats", "kafka", "rabbitmq"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -84,6 +84,19 @@ jobs:
     defaults:
       run:
         working-directory: otel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: test
+        run: go test -race -count=1 ./...
+
+  zstd:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: zstd
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
