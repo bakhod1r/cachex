@@ -20,6 +20,7 @@ type config struct {
 	sweepInterval time.Duration
 	maxRefreshes  int
 	negativeTTL   time.Duration
+	ttlJitter     float64
 	lockTTL       time.Duration
 	lockPoll      time.Duration
 	invalidator   Invalidator
@@ -155,6 +156,18 @@ func WithNegativeTTL(d time.Duration) Option {
 			return fmt.Errorf("cachex: negative negative TTL")
 		}
 		c.negativeTTL = d
+		return nil
+	}
+}
+
+// WithTTLJitter shortens every stored TTL by a random fraction in [0, f), so keys written
+// together don't expire together. f must be in [0, 1). 0 (default) disables.
+func WithTTLJitter(f float64) Option {
+	return func(c *config) error {
+		if f < 0 || f >= 1 {
+			return fmt.Errorf("cachex: TTL jitter must be in [0, 1)")
+		}
+		c.ttlJitter = f
 		return nil
 	}
 }

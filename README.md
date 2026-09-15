@@ -77,6 +77,24 @@ vals, err := c.GetMulti(ctx, []string{"a", "b", "c"}) // map holds only found ke
 L1 answers first; remaining keys go to L2 in one round trip when the store implements
 `cachex.MultiGetter` (memcached does). Keys starting with `cachex:` are reserved.
 
+```go
+_ = c.SetMulti(ctx, map[string][]byte{"a": a, "b": b}, time.Minute) // invalid key writes nothing
+
+vals, err := c.GetOrLoadMulti(ctx, ids, time.Minute, func(ctx context.Context, missing []string) (map[string][]byte, error) {
+    return db.LoadUsers(ctx, missing) // one query for all misses; absent keys = not found
+})
+```
+
+`GetOrLoadMulti` has no single-flight across concurrent batches, stale window or early refresh.
+With `WithNegativeTTL`, keys the loader omits are cached as absent.
+
+## Loader panics and TTL jitter
+
+- A panicking loader returns `cachex.ErrLoaderPanic` (counted in `Stats.LoadErrors`) instead of
+  crashing the process; nothing is cached.
+- `WithTTLJitter(f)` shortens each stored TTL by a random fraction in `[0, f)` so keys written
+  together don't expire together.
+
 ## Typed values
 
 ```go

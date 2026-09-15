@@ -8,6 +8,7 @@ package cachex
 import (
 	"context"
 	"errors"
+	"fmt"
 	"hash/maphash"
 	"math"
 	"math/rand/v2"
@@ -143,20 +144,31 @@ func (c *Cache) Delete(ctx context.Context, key string) error {
 // GetMulti returns the cached values that are present; missing keys are simply absent.
 // L1 answers first; the rest go to L2 in one round trip when the store implements MultiGetter.
 func (c *Cache) GetMulti(ctx context.Context, keys []string) (map[string][]byte, error) {
+	out, _, err := c.getMulti(ctx, keys)
+	return out, err
+}
+
+// getMulti is GetMulti that also reports keys holding a live tombstone (cached ErrNotFound).
+func (c *Cache) getMulti(ctx context.Context, keys []string) (map[string][]byte, map[string]bool, error) {
 	if c.closed.Load() {
-		return nil, ErrClosed
+		return nil, nil, ErrClosed
 	}
 	out := make(map[string][]byte, len(keys))
+	absent := map[string]bool{}
 	var rest []string
 	now := c.nowNs()
 	for _, k := range keys {
 		if k == "" || strings.HasPrefix(k, reservedPrefix) {
-			return nil, ErrInvalidKey
+			return nil, nil, ErrInvalidKey
 		}
 		if raw, ok := c.l1.Get(k); ok {
 			if e, err := envelope.Decode(raw); err == nil {
 				c.st.l1Hits.Add(1)
-				if e.Flags&envelope.FlagTombstone == 0 && !e.Expired(now) {
+				switch {
+				case e.Expired(now):
+				case e.Flags&envelope.FlagTombstone != 0:
+					absent[k] = true
+				default:
 					out[k] = clone(e.Value)
 				}
 				continue
@@ -166,16 +178,18 @@ func (c *Cache) GetMulti(ctx context.Context, keys []string) (map[string][]byte,
 		rest = append(rest, k)
 	}
 	if len(rest) == 0 || c.l2 == nil {
-		return out, nil
+		return out, absent, nil
 	}
 	mg, ok := c.l2.(MultiGetter)
 	if !ok {
 		for _, k := range rest {
 			if v, err := c.getL2Only(ctx, k); err == nil {
 				out[k] = v
+			} else if errors.Is(err, ErrNotFound) {
+				absent[k] = true
 			}
 		}
-		return out, nil
+		return out, absent, nil
 	}
 	var found map[string][]byte
 	if err := c.l2Call(func() error {
@@ -183,7 +197,7 @@ func (c *Cache) GetMulti(ctx context.Context, keys []string) (map[string][]byte,
 		found, err = mg.GetMulti(ctx, rest)
 		return err
 	}); err != nil {
-		return out, nil // degraded: L1 answers only
+		return out, absent, nil // degraded: L1 answers only
 	}
 	for _, k := range rest {
 		raw, ok := found[k]
@@ -191,11 +205,13 @@ func (c *Cache) GetMulti(ctx context.Context, keys []string) (map[string][]byte,
 			c.st.l2Misses.Add(1)
 			continue
 		}
-		if v, ok := c.accept(k, raw, now); ok {
+		if v, err := c.accept(k, raw, now); err == nil {
 			out[k] = v
+		} else if errors.Is(err, ErrNotFound) {
+			absent[k] = true
 		}
 	}
-	return out, nil
+	return out, absent, nil
 }
 
 func (c *Cache) getL2Only(ctx context.Context, key string) ([]byte, error) {
@@ -210,27 +226,115 @@ func (c *Cache) getL2Only(ctx context.Context, key string) ([]byte, error) {
 		}
 		return nil, err
 	}
-	if v, ok := c.accept(key, raw, c.nowNs()); ok {
-		return v, nil
-	}
-	return nil, ErrMiss
+	return c.accept(key, raw, c.nowNs())
 }
 
-// accept decodes an L2 value, backfills L1 and returns a live value.
-func (c *Cache) accept(key string, raw []byte, now int64) ([]byte, bool) {
+// accept decodes an L2 value, backfills L1 and returns a live value, ErrNotFound for a
+// live tombstone, or ErrMiss.
+func (c *Cache) accept(key string, raw []byte, now int64) ([]byte, error) {
 	e, err := envelope.Decode(raw)
 	if err != nil {
 		c.st.decodeErrors.Add(1)
-		return nil, false
+		return nil, ErrMiss
 	}
 	c.st.l2Hits.Add(1)
 	if hold := c.l1Hold(e, now); hold > 0 {
 		c.l1.Set(key, raw, hold)
 	}
-	if e.Flags&envelope.FlagTombstone != 0 || e.Expired(now) {
-		return nil, false
+	switch {
+	case e.Expired(now):
+		return nil, ErrMiss
+	case e.Flags&envelope.FlagTombstone != 0:
+		return nil, ErrNotFound
 	}
-	return clone(e.Value), true
+	return clone(e.Value), nil
+}
+
+// SetMulti writes every entry like Set. Keys are validated first, so an invalid key writes nothing.
+func (c *Cache) SetMulti(ctx context.Context, items map[string][]byte, ttl time.Duration) error {
+	for k := range items {
+		if err := c.check(k); err != nil {
+			return err
+		}
+	}
+	ttl = c.ttl(ttl)
+	for k, v := range items {
+		c.bump(k)
+		c.store(ctx, k, envelope.Entry{Value: v}, ttl)
+	}
+	return nil
+}
+
+// MultiLoader loads the given missing keys at once. Keys absent from the result don't exist;
+// with WithNegativeTTL that absence is cached.
+type MultiLoader func(ctx context.Context, keys []string) (map[string][]byte, error)
+
+// GetOrLoadMulti returns cached values for keys and loads the rest with one loader call.
+// Unlike GetOrLoad there is no single-flight across concurrent batches, no stale window and
+// no early refresh. Keys the source doesn't have are absent from the result.
+func (c *Cache) GetOrLoadMulti(ctx context.Context, keys []string, ttl time.Duration, load MultiLoader) (map[string][]byte, error) {
+	if load == nil {
+		return nil, errors.New("cachex: nil loader")
+	}
+	out, absent, err := c.getMulti(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	var missing []string
+	seen := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		if _, ok := out[k]; ok || absent[k] || seen[k] {
+			continue
+		}
+		seen[k] = true
+		missing = append(missing, k)
+	}
+	c.st.negativeHits.Add(uint64(len(absent)))
+	if len(missing) == 0 {
+		return out, nil
+	}
+	ttl = c.ttl(ttl)
+	gens := make([]uint64, len(missing))
+	for i, k := range missing {
+		gens[i] = c.gen(k)
+	}
+	lctx, cancel := context.WithTimeout(ctx, c.cfg.loadTimeout)
+	defer cancel()
+	start := c.cfg.clock.Now()
+	loaded, err := safeLoad(func() (map[string][]byte, error) { return load(lctx, missing) })
+	c.st.loads.Add(1)
+	if err != nil {
+		c.st.loadErrors.Add(1)
+		return nil, err
+	}
+	delta := int64(c.cfg.clock.Now().Sub(start))
+	for i, k := range missing {
+		v, ok := loaded[k]
+		if ok {
+			out[k] = clone(v)
+		}
+		if c.gen(k) != gens[i] {
+			c.st.loadsDiscarded.Add(1)
+			continue // Set/Delete raced the loader
+		}
+		switch {
+		case ok:
+			c.store(ctx, k, envelope.Entry{Value: v, Delta: delta}, ttl)
+		case c.cfg.negativeTTL > 0:
+			c.store(ctx, k, envelope.Entry{Flags: envelope.FlagTombstone}, c.cfg.negativeTTL)
+		}
+	}
+	return out, nil
+}
+
+// safeLoad runs f, turning a panic into ErrLoaderPanic so one bad loader can't crash the process.
+func safeLoad[T any](f func() (T, error)) (v T, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%w: %v", ErrLoaderPanic, r)
+		}
+	}()
+	return f()
 }
 
 func (c *Cache) publish(ctx context.Context, msg Invalidation) {
@@ -312,7 +416,7 @@ func (c *Cache) load(ctx context.Context, key string, ttl time.Duration, load Lo
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.loadTimeout)
 	defer cancel()
 	start := c.cfg.clock.Now()
-	v, err := load(ctx)
+	v, err := safeLoad(func() ([]byte, error) { return load(ctx) })
 	c.st.loads.Add(1)
 	if errors.Is(err, ErrNotFound) && c.cfg.negativeTTL > 0 {
 		c.store(ctx, key, envelope.Entry{Flags: envelope.FlagTombstone}, c.cfg.negativeTTL)
@@ -478,6 +582,9 @@ func (c *Cache) l1Hold(e envelope.Entry, now int64) time.Duration {
 
 func (c *Cache) store(ctx context.Context, key string, e envelope.Entry, ttl time.Duration) {
 	now := c.nowNs()
+	if j := c.cfg.ttlJitter; j > 0 {
+		ttl -= time.Duration(float64(ttl) * j * c.cfg.rand())
+	}
 	e.StoredAt = now
 	e.ExpireAt = now + int64(ttl)
 	raw := envelope.Encode(e)

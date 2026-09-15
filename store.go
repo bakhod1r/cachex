@@ -17,6 +17,8 @@ var (
 	// ErrNotFound is returned by a Loader when the source has no such record. With
 	// WithNegativeTTL the absence is cached and GetOrLoad returns ErrNotFound without loading.
 	ErrNotFound = errors.New("cachex: not found")
+	// ErrLoaderPanic wraps a panic recovered from a Loader. It is returned, never cached.
+	ErrLoaderPanic = errors.New("cachex: loader panicked")
 )
 
 // reservedPrefix marks internal keys (namespace versions, load locks); user keys may not use it.
