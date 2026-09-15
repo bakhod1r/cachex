@@ -43,6 +43,11 @@ if err != nil { return err }
 defer c.Close() // also closes the store
 ```
 
+**Timeouts:** the memcached client has no context support. A context is checked only before an
+operation starts; once it is on the wire it is bounded by `Config.Timeout`, not by your deadline.
+Keep `Timeout` well below your request budget, and set `MaxConcurrency` so a slow memcached fails
+fast with `ErrL2Unavailable` instead of piling up goroutines.
+
 Reads go L1 -> L2 (backfilling L1) -> miss. `Set` writes L2 then L1. `Delete` removes from
 both and returns L2 errors. With a `CASStore` (memcached, memstore) `Delete` writes a short-lived
 marker to L2 instead of removing the key; reads treat it as absent.

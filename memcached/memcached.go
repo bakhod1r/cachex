@@ -28,7 +28,7 @@ const (
 // Config configures a Store.
 type Config struct {
 	Servers        []string
-	Timeout        time.Duration // default 100ms
+	Timeout        time.Duration // default 100ms; per-op bound, since ctx is checked only before an op starts
 	MaxIdleConns   int           // default 2*GOMAXPROCS
 	MaxConcurrency int           // 0 = unlimited; when full ops fail fast with cachex.ErrL2Unavailable
 	KeyPrefix      string
