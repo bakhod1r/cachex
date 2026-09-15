@@ -95,3 +95,17 @@ func TestNamespaceL1Only(t *testing.T) {
 		t.Fatalf("want miss, got %v", err)
 	}
 }
+
+func TestNamespaceMalformedVersionRepairs(t *testing.T) {
+	e := newEnv(t, cachex.WithVersionTTL(time.Second))
+	ns, _ := e.c.Namespace("orders")
+	_ = e.l2.Set(ctx, "cachex:ns:orders:v", []byte("garbage"), 0)
+	_ = ns.Set(ctx, "1", []byte("v"), time.Hour)
+	if v, err := ns.Get(ctx, "1"); err != nil || string(v) != "v" {
+		t.Fatalf("namespace unusable with malformed version: %q %v", v, err)
+	}
+	raw, err := e.l2.Get(ctx, "cachex:ns:orders:v")
+	if err != nil || string(raw) == "garbage" {
+		t.Fatalf("version not repaired in L2: %q %v", raw, err)
+	}
+}

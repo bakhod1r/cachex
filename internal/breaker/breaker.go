@@ -94,7 +94,7 @@ func (b *Breaker) advance(now time.Time) {
 }
 
 // Allow reports whether a call may proceed. In HalfOpen it admits at most
-// HalfOpenProbes outstanding probes; each admitted call must report Success or Failure.
+// HalfOpenProbes outstanding probes; each admitted call must report Success, Failure or Cancel.
 func (b *Breaker) Allow() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -146,6 +146,16 @@ func (b *Breaker) Failure() {
 			next = limit
 		}
 		b.state, b.openedAt, b.cooldown, b.inflight = Open, now, next, 0
+	}
+}
+
+// Cancel records a call whose outcome says nothing about the dependency (e.g. the caller
+// cancelled). It frees a half-open probe slot without closing or opening the breaker.
+func (b *Breaker) Cancel() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.state == HalfOpen && b.inflight > 0 {
+		b.inflight--
 	}
 }
 

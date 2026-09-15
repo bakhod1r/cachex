@@ -170,7 +170,17 @@ func (n *Namespace) fetch(ctx context.Context) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return strconv.ParseUint(string(raw), 10, 64)
+	v, err := strconv.ParseUint(string(raw), 10, 64)
+	if err != nil {
+		// Corrupt counter (foreign writer, bad manual edit): drop it and re-seed. Seeds are
+		// wall-clock based, so the new version never collides with an old one.
+		n.c.st.decodeErrors.Add(1)
+		if err := n.c.l2Call(func() error { return n.c.l2.Delete(ctx, n.versionKey()) }); err != nil {
+			return 0, err
+		}
+		return n.seed(ctx)
+	}
+	return v, nil
 }
 
 // seed creates a missing version counter. It starts at wall-clock milliseconds so a counter

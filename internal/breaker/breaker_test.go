@@ -157,3 +157,28 @@ func TestConcurrent(t *testing.T) {
 		<-done
 	}
 }
+
+func TestCancelReleasesProbeWithoutJudging(t *testing.T) {
+	c := &clock{t: time.Unix(0, 0)}
+	b := newB(c)
+	trip(b)
+	c.add(5 * time.Second)
+	if !b.Allow() {
+		t.Fatal("probe not admitted")
+	}
+	b.Cancel()
+	if b.State() != HalfOpen {
+		t.Fatalf("cancel changed state: %v", b.State())
+	}
+	if !b.Allow() {
+		t.Fatal("cancelled probe did not free its slot")
+	}
+	b2 := newB(c)
+	for i := 0; i < 10; i++ {
+		b2.Allow()
+		b2.Cancel()
+	}
+	if b2.State() != Closed {
+		t.Fatalf("cancels tripped breaker: %v", b2.State())
+	}
+}

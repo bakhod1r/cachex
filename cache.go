@@ -491,7 +491,8 @@ func (c *Cache) store(ctx context.Context, key string, e envelope.Entry, ttl tim
 	c.l1.Set(key, raw, min(hold, ttl+c.cfg.staleWindow))
 }
 
-// l2Call runs op through the circuit breaker. Misses and semantic errors don't count as failures.
+// l2Call runs op through the circuit breaker. Misses, semantic errors, caller cancellation
+// and shutdown don't count as failures.
 func (c *Cache) l2Call(op func() error) error {
 	if !c.br.Allow() {
 		c.st.l2Skipped.Add(1)
@@ -499,6 +500,10 @@ func (c *Cache) l2Call(op func() error) error {
 	}
 	err := op()
 	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, ErrClosed):
+		// Caller gave up or we are shutting down: no evidence about L2 health either way.
+		// DeadlineExceeded still counts, since a slow L2 is exactly what the breaker is for.
+		c.br.Cancel()
 	case err == nil, errors.Is(err, ErrMiss), errors.Is(err, ErrNotStored),
 		errors.Is(err, ErrInvalidKey), errors.Is(err, ErrValueTooLarge):
 		c.br.Success()

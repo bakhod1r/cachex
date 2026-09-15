@@ -462,3 +462,28 @@ func TestLoadAfterDeleteStartsFreshFlight(t *testing.T) {
 		t.Fatalf("got %q %v, want fresh (joined pre-Delete flight?)", v, err)
 	}
 }
+
+func TestCallerCancellationDoesNotTripBreaker(t *testing.T) {
+	e := newEnv(t)
+	cctx, cancel := context.WithCancel(ctx)
+	cancel()
+	for i := 0; i < 100; i++ {
+		_, _ = e.c.Get(cctx, "k")
+		_ = e.c.Set(cctx, "k", []byte("v"), time.Minute)
+	}
+	st := e.c.Stats()
+	if st.L2Errors != 0 || st.Breaker != "closed" {
+		t.Fatalf("cancelled calls counted as L2 failures: errors=%d breaker=%s", st.L2Errors, st.Breaker)
+	}
+}
+
+func TestCloseDoesNotCountL2Errors(t *testing.T) {
+	e := newEnv(t)
+	_ = e.l2.Close()
+	for i := 0; i < 100; i++ {
+		_, _ = e.c.Get(ctx, "k")
+	}
+	if st := e.c.Stats(); st.L2Errors != 0 {
+		t.Fatalf("ErrClosed counted as transport failure: %d", st.L2Errors)
+	}
+}
