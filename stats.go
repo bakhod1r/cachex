@@ -3,11 +3,13 @@ package cachex
 import "github.com/bakhod1r/cachex/internal/counter"
 
 type counters struct {
-	l1Hits, l1Misses, l2Hits, l2Misses, l2Errors, l2Skipped counter.Counter
-	loads, loadErrors, loadsShared                          counter.Counter
-	staleServed, earlyRefreshes, decodeErrors               counter.Counter
-	negativeHits, lockWaits, publishErrors                  counter.Counter
-	loadsDiscarded                                          counter.Counter
+	// L1 hits and misses come from the lru's own counters (one striped counter per
+	// lookup, not two); l1Corrupt moves undecodable L1 hits over to misses.
+	l1Corrupt, l2Hits, l2Misses, l2Errors, l2Skipped counter.Counter
+	loads, loadErrors, loadsShared                   counter.Counter
+	staleServed, earlyRefreshes, decodeErrors        counter.Counter
+	negativeHits, lockWaits, publishErrors           counter.Counter
+	loadsDiscarded                                   counter.Counter
 }
 
 // Stats is a point-in-time snapshot. Counters are read independently, so a snapshot
@@ -45,8 +47,9 @@ func (s Stats) HitRatio() float64 {
 // Stats returns a snapshot.
 func (c *Cache) Stats() Stats {
 	l1 := c.l1.Stats()
+	corrupt := min(c.st.l1Corrupt.Load(), l1.Hits)
 	return Stats{
-		L1Hits: c.st.l1Hits.Load(), L1Misses: c.st.l1Misses.Load(),
+		L1Hits: l1.Hits - corrupt, L1Misses: l1.Misses + corrupt,
 		L2Hits: c.st.l2Hits.Load(), L2Misses: c.st.l2Misses.Load(),
 		L2Errors: c.st.l2Errors.Load(), L2Skipped: c.st.l2Skipped.Load(),
 		Loads: c.st.loads.Load(), LoadErrors: c.st.loadErrors.Load(), LoadsShared: c.st.loadsShared.Load(),

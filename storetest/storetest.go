@@ -185,6 +185,28 @@ func Run(t *testing.T, newStore func(t *testing.T) cachex.Store, advance func(d 
 		}
 	})
 
+	t.Run("GetsMulti", func(t *testing.T) {
+		s := fresh(t)
+		mg, ok := s.(cachex.MultiCASGetter)
+		cs, _ := s.(cachex.CASStore)
+		if !ok || cs == nil {
+			t.Skip("store does not implement cachex.MultiCASGetter and cachex.CASStore")
+		}
+		mustSet(t, s, "a", "1", 0)
+		mustSet(t, s, "b", "2", 0)
+		vals, toks, err := mg.GetsMulti(ctx, []string{"a", "b", "missing"})
+		if err != nil || string(vals["a"]) != "1" || string(vals["b"]) != "2" || len(vals) != 2 || len(toks) != 2 {
+			t.Fatalf("GetsMulti = %v %v %v", vals, toks, err)
+		}
+		mustSet(t, s, "b", "changed", 0)
+		if err := cs.CompareAndSwap(ctx, "a", []byte("1x"), toks["a"], 0); err != nil {
+			t.Fatalf("CAS with GetsMulti token: %v", err)
+		}
+		if err := cs.CompareAndSwap(ctx, "b", []byte("2x"), toks["b"], 0); !errors.Is(err, cachex.ErrNotStored) {
+			t.Fatalf("CAS after concurrent Set: %v, want ErrNotStored", err)
+		}
+	})
+
 	t.Run("ConcurrentSetGet", func(t *testing.T) {
 		s := fresh(t)
 		const workers = 50

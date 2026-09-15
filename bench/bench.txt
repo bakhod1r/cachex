@@ -1,0 +1,326 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/bakhod1r/cachex/bench
+cpu: Apple M1
+BenchmarkParallelGetHit/cachex-8         	11191184	        70.23 ns/op	      64 B/op	       1 allocs/op
+BenchmarkParallelGetHit/cachex-8         	 9091236	        63.09 ns/op	      64 B/op	       1 allocs/op
+BenchmarkParallelGetHit/cachex-8         	 8830747	        65.24 ns/op	      64 B/op	       1 allocs/op
+BenchmarkParallelGetHit/cachex-8         	 8835536	        66.10 ns/op	      64 B/op	       1 allocs/op
+BenchmarkParallelGetHit/cachex-8         	 9028626	        66.67 ns/op	      64 B/op	       1 allocs/op
+BenchmarkParallelGetHit/cachex-8         	 9281926	        74.70 ns/op	      64 B/op	       1 allocs/op
+BenchmarkParallelGetHit/cachex-8         	 8672995	        66.76 ns/op	      64 B/op	       1 allocs/op
+BenchmarkParallelGetHit/cachex-8         	 8910184	        66.46 ns/op	      64 B/op	       1 allocs/op
+BenchmarkParallelGetHit/cachex-8         	 8842536	        65.99 ns/op	      64 B/op	       1 allocs/op
+BenchmarkParallelGetHit/cachex-8         	 8476501	        65.72 ns/op	      64 B/op	       1 allocs/op
+BenchmarkParallelGetHit/hashicorp-lru-8  	 1816236	       298.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/hashicorp-lru-8  	 1920176	       312.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/hashicorp-lru-8  	 1922598	       309.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/hashicorp-lru-8  	 1991472	       305.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/hashicorp-lru-8  	 2024569	       304.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/hashicorp-lru-8  	 2003670	       307.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/hashicorp-lru-8  	 1985432	       314.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/hashicorp-lru-8  	 1946226	       309.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/hashicorp-lru-8  	 1974770	       309.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/hashicorp-lru-8  	 1974534	       306.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/ristretto-8      	20286946	        33.84 ns/op	       1 B/op	       0 allocs/op
+BenchmarkParallelGetHit/ristretto-8      	19209424	        36.02 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/ristretto-8      	20768371	        47.40 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/ristretto-8      	15294237	        33.68 ns/op	       1 B/op	       0 allocs/op
+BenchmarkParallelGetHit/ristretto-8      	15659032	        36.34 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/ristretto-8      	18926299	        34.62 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/ristretto-8      	23161923	        33.66 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/ristretto-8      	22674093	        36.20 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/ristretto-8      	20513580	        49.13 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/ristretto-8      	19992502	        38.69 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/otter-8          	28282598	        22.43 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/otter-8          	25704830	        24.84 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/otter-8          	26613291	        22.20 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/otter-8          	24460467	        24.31 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/otter-8          	28561680	        27.74 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/otter-8          	23218989	        29.40 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/otter-8          	31126117	        22.37 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/otter-8          	31589337	        25.25 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/otter-8          	22618286	        26.31 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/otter-8          	25905104	        26.98 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/theine-8         	14777050	        38.42 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/theine-8         	17943589	        39.78 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/theine-8         	16454265	        33.11 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/theine-8         	15041238	        36.25 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/theine-8         	16951346	        36.35 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/theine-8         	16589325	        35.92 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/theine-8         	16709774	        38.73 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/theine-8         	17285835	        38.10 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/theine-8         	17249268	        36.43 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/theine-8         	17978695	        36.84 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/bigcache-8       	 9655363	        66.13 ns/op	      72 B/op	       2 allocs/op
+BenchmarkParallelGetHit/bigcache-8       	 9719445	        66.56 ns/op	      72 B/op	       2 allocs/op
+BenchmarkParallelGetHit/bigcache-8       	 9546247	        69.12 ns/op	      72 B/op	       2 allocs/op
+BenchmarkParallelGetHit/bigcache-8       	 8182942	        75.06 ns/op	      72 B/op	       2 allocs/op
+BenchmarkParallelGetHit/bigcache-8       	 9484710	        67.52 ns/op	      72 B/op	       2 allocs/op
+BenchmarkParallelGetHit/bigcache-8       	 9560774	        67.64 ns/op	      72 B/op	       2 allocs/op
+BenchmarkParallelGetHit/bigcache-8       	 9169958	        67.21 ns/op	      72 B/op	       2 allocs/op
+BenchmarkParallelGetHit/bigcache-8       	 9659456	        66.63 ns/op	      72 B/op	       2 allocs/op
+BenchmarkParallelGetHit/bigcache-8       	 9874557	        65.73 ns/op	      72 B/op	       2 allocs/op
+BenchmarkParallelGetHit/bigcache-8       	 9760938	        67.30 ns/op	      72 B/op	       2 allocs/op
+BenchmarkParallelGetHit/freecache-8      	 5799933	       104.8 ns/op	      64 B/op	       1 allocs/op
+BenchmarkParallelGetHit/freecache-8      	 5817548	       105.6 ns/op	      64 B/op	       1 allocs/op
+BenchmarkParallelGetHit/freecache-8      	 5736654	       112.0 ns/op	      64 B/op	       1 allocs/op
+BenchmarkParallelGetHit/freecache-8      	 5943694	       110.0 ns/op	      64 B/op	       1 allocs/op
+BenchmarkParallelGetHit/freecache-8      	 6049809	       106.3 ns/op	      64 B/op	       1 allocs/op
+BenchmarkParallelGetHit/freecache-8      	 5740096	       105.9 ns/op	      64 B/op	       1 allocs/op
+BenchmarkParallelGetHit/freecache-8      	 5634933	       105.5 ns/op	      64 B/op	       1 allocs/op
+BenchmarkParallelGetHit/freecache-8      	 5940079	       106.4 ns/op	      64 B/op	       1 allocs/op
+BenchmarkParallelGetHit/freecache-8      	 5973247	       109.6 ns/op	      64 B/op	       1 allocs/op
+BenchmarkParallelGetHit/freecache-8      	 5583252	       107.6 ns/op	      64 B/op	       1 allocs/op
+BenchmarkParallelGetHit/go-cache-8       	 4467423	       116.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/go-cache-8       	 5134638	       115.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/go-cache-8       	 5156288	       118.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/go-cache-8       	 4766185	       118.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/go-cache-8       	 5067972	       116.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/go-cache-8       	 5178462	       118.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/go-cache-8       	 5219306	       124.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/go-cache-8       	 4998553	       115.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/go-cache-8       	 5206356	       116.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHit/go-cache-8       	 5172112	       118.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/cachex-8      	 6246184	       118.8 ns/op	      60 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/cachex-8      	 5371924	       116.4 ns/op	      60 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/cachex-8      	 5330040	       119.9 ns/op	      60 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/cachex-8      	 4863087	       119.5 ns/op	      60 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/cachex-8      	 5339786	       118.1 ns/op	      60 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/cachex-8      	 5259771	       120.0 ns/op	      60 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/cachex-8      	 5073458	       127.3 ns/op	      60 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/cachex-8      	 5029228	       125.6 ns/op	      60 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/cachex-8      	 4706661	       118.0 ns/op	      60 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/cachex-8      	 5486852	       115.4 ns/op	      60 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/hashicorp-lru-8         	 1377073	       403.8 ns/op	       2 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/hashicorp-lru-8         	 1440588	       414.8 ns/op	       2 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/hashicorp-lru-8         	 1444459	       419.3 ns/op	       2 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/hashicorp-lru-8         	 1409427	       424.1 ns/op	       2 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/hashicorp-lru-8         	 1440426	       418.3 ns/op	       2 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/hashicorp-lru-8         	 1444052	       413.9 ns/op	       2 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/hashicorp-lru-8         	 1419885	       417.7 ns/op	       2 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/hashicorp-lru-8         	 1460773	       424.3 ns/op	       2 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/hashicorp-lru-8         	 1405948	       425.5 ns/op	       2 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/hashicorp-lru-8         	 1454846	       414.1 ns/op	       2 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/ristretto-8             	 4813605	       151.2 ns/op	      17 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/ristretto-8             	 3964464	       149.6 ns/op	      17 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/ristretto-8             	 3897126	       150.5 ns/op	      17 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/ristretto-8             	 4111359	       156.6 ns/op	      17 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/ristretto-8             	 3969912	       152.8 ns/op	      17 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/ristretto-8             	 3958680	       151.8 ns/op	      17 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/ristretto-8             	 3912600	       151.6 ns/op	      17 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/ristretto-8             	 3916582	       149.3 ns/op	      17 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/ristretto-8             	 3962038	       157.8 ns/op	      17 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/ristretto-8             	 3991921	       154.1 ns/op	      17 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/otter-8                 	 8304996	        81.31 ns/op	       6 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/otter-8                 	 8055948	        71.27 ns/op	       6 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/otter-8                 	 8329177	        75.37 ns/op	       6 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/otter-8                 	 8078550	        74.75 ns/op	       6 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/otter-8                 	 8103294	        70.18 ns/op	       6 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/otter-8                 	 8230315	        79.82 ns/op	       6 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/otter-8                 	 6682918	        77.59 ns/op	       6 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/otter-8                 	 8092142	        86.72 ns/op	       6 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/otter-8                 	 7108418	        83.11 ns/op	       7 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/otter-8                 	 7541500	       107.6 ns/op	       7 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/theine-8                	 2051174	       312.1 ns/op	       4 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/theine-8                	 2325740	       334.8 ns/op	       3 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/theine-8                	 3320581	       188.9 ns/op	       3 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/theine-8                	 3270186	       180.6 ns/op	       3 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/theine-8                	 3133788	       194.6 ns/op	       3 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/theine-8                	 2993256	       207.4 ns/op	       3 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/theine-8                	 3235513	       183.7 ns/op	       3 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/theine-8                	 3138039	       223.9 ns/op	       3 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/theine-8                	 3073926	       224.3 ns/op	       3 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/theine-8                	 2828331	       203.1 ns/op	       3 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/bigcache-8              	 4272282	       148.8 ns/op	      44 B/op	       1 allocs/op
+BenchmarkParallelMixedZipf/bigcache-8              	 4216250	       149.4 ns/op	      44 B/op	       1 allocs/op
+BenchmarkParallelMixedZipf/bigcache-8              	 4230253	       171.5 ns/op	      44 B/op	       1 allocs/op
+BenchmarkParallelMixedZipf/bigcache-8              	 3503461	       185.4 ns/op	      44 B/op	       1 allocs/op
+BenchmarkParallelMixedZipf/bigcache-8              	 3194386	       188.6 ns/op	      44 B/op	       1 allocs/op
+BenchmarkParallelMixedZipf/bigcache-8              	 4113194	       147.8 ns/op	      44 B/op	       1 allocs/op
+BenchmarkParallelMixedZipf/bigcache-8              	 4268394	       150.9 ns/op	      44 B/op	       1 allocs/op
+BenchmarkParallelMixedZipf/bigcache-8              	 4036639	       159.5 ns/op	      44 B/op	       1 allocs/op
+BenchmarkParallelMixedZipf/bigcache-8              	 3911306	       147.4 ns/op	      44 B/op	       1 allocs/op
+BenchmarkParallelMixedZipf/bigcache-8              	 3442237	       157.7 ns/op	      44 B/op	       1 allocs/op
+BenchmarkParallelMixedZipf/freecache-8             	 3740517	       167.5 ns/op	      44 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/freecache-8             	 3387656	       170.5 ns/op	      44 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/freecache-8             	 3839379	       167.5 ns/op	      44 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/freecache-8             	 3854722	       165.3 ns/op	      44 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/freecache-8             	 3441242	       161.7 ns/op	      44 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/freecache-8             	 3716188	       167.0 ns/op	      44 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/freecache-8             	 3895113	       166.0 ns/op	      44 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/freecache-8             	 3799977	       172.7 ns/op	      44 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/freecache-8             	 3714703	       160.8 ns/op	      44 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/freecache-8             	 3780627	       164.7 ns/op	      44 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/go-cache-8              	 1966232	       276.3 ns/op	       5 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/go-cache-8              	 2133894	       296.8 ns/op	       5 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/go-cache-8              	 2181272	       275.1 ns/op	       5 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/go-cache-8              	 2198252	       278.1 ns/op	       5 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/go-cache-8              	 2168116	       274.9 ns/op	       5 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/go-cache-8              	 2202609	       278.5 ns/op	       5 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/go-cache-8              	 2164184	       282.7 ns/op	       5 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/go-cache-8              	 2147895	       279.0 ns/op	       5 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/go-cache-8              	 2178252	       275.6 ns/op	       5 B/op	       0 allocs/op
+BenchmarkParallelMixedZipf/go-cache-8              	 2186846	       277.2 ns/op	       5 B/op	       0 allocs/op
+BenchmarkHitRatio/cachex-8                         	       2	 264423396 ns/op	        77.70 hit%
+BenchmarkHitRatio/cachex-8                         	       2	 265861479 ns/op	        77.68 hit%
+BenchmarkHitRatio/cachex-8                         	       2	 270160250 ns/op	        77.69 hit%
+BenchmarkHitRatio/cachex-8                         	       2	 267204396 ns/op	        77.68 hit%
+BenchmarkHitRatio/cachex-8                         	       2	 262861917 ns/op	        77.70 hit%
+BenchmarkHitRatio/cachex-8                         	       2	 262927812 ns/op	        77.69 hit%
+BenchmarkHitRatio/cachex-8                         	       2	 264790666 ns/op	        77.67 hit%
+BenchmarkHitRatio/cachex-8                         	       2	 264327188 ns/op	        77.68 hit%
+BenchmarkHitRatio/cachex-8                         	       2	 267315896 ns/op	        77.69 hit%
+BenchmarkHitRatio/cachex-8                         	       2	 267761834 ns/op	        77.67 hit%
+BenchmarkHitRatio/hashicorp-lru-8                  	       5	 122360883 ns/op	        74.74 hit%
+BenchmarkHitRatio/hashicorp-lru-8                  	       5	 122248450 ns/op	        74.74 hit%
+BenchmarkHitRatio/hashicorp-lru-8                  	       5	 123377867 ns/op	        74.74 hit%
+BenchmarkHitRatio/hashicorp-lru-8                  	       4	 202040833 ns/op	        74.74 hit%
+BenchmarkHitRatio/hashicorp-lru-8                  	       5	 122904992 ns/op	        74.74 hit%
+BenchmarkHitRatio/hashicorp-lru-8                  	       5	 123193725 ns/op	        74.74 hit%
+BenchmarkHitRatio/hashicorp-lru-8                  	       4	 126853510 ns/op	        74.74 hit%
+BenchmarkHitRatio/hashicorp-lru-8                  	       5	 129473075 ns/op	        74.74 hit%
+BenchmarkHitRatio/hashicorp-lru-8                  	       5	 122708508 ns/op	        74.74 hit%
+BenchmarkHitRatio/hashicorp-lru-8                  	       5	 121924967 ns/op	        74.74 hit%
+BenchmarkHitRatio/ristretto-8                      	       3	 188453000 ns/op	        76.58 hit%
+BenchmarkHitRatio/ristretto-8                      	       3	 174899694 ns/op	        76.60 hit%
+BenchmarkHitRatio/ristretto-8                      	       3	 178566875 ns/op	        76.79 hit%
+BenchmarkHitRatio/ristretto-8                      	       3	 176435278 ns/op	        76.62 hit%
+BenchmarkHitRatio/ristretto-8                      	       3	 206077972 ns/op	        76.54 hit%
+BenchmarkHitRatio/ristretto-8                      	       3	 177069806 ns/op	        76.55 hit%
+BenchmarkHitRatio/ristretto-8                      	       3	 200105139 ns/op	        76.59 hit%
+BenchmarkHitRatio/ristretto-8                      	       3	 214600569 ns/op	        76.94 hit%
+BenchmarkHitRatio/ristretto-8                      	       3	 199014361 ns/op	        76.68 hit%
+BenchmarkHitRatio/ristretto-8                      	       2	 353896833 ns/op	        76.94 hit%
+BenchmarkHitRatio/otter-8                          	       4	 146419500 ns/op	        78.66 hit%
+BenchmarkHitRatio/otter-8                          	       4	 144199114 ns/op	        78.62 hit%
+BenchmarkHitRatio/otter-8                          	       4	 145233833 ns/op	        78.67 hit%
+BenchmarkHitRatio/otter-8                          	       4	 145950396 ns/op	        78.60 hit%
+BenchmarkHitRatio/otter-8                          	       4	 146374344 ns/op	        78.74 hit%
+BenchmarkHitRatio/otter-8                          	       4	 146301448 ns/op	        78.61 hit%
+BenchmarkHitRatio/otter-8                          	       4	 144607062 ns/op	        78.68 hit%
+BenchmarkHitRatio/otter-8                          	       4	 147361229 ns/op	        78.73 hit%
+BenchmarkHitRatio/otter-8                          	       4	 144451334 ns/op	        78.57 hit%
+BenchmarkHitRatio/otter-8                          	       4	 144643906 ns/op	        78.67 hit%
+BenchmarkHitRatio/theine-8                         	       2	 478953875 ns/op	        79.32 hit%
+BenchmarkHitRatio/theine-8                         	       2	 466259458 ns/op	        79.54 hit%
+BenchmarkHitRatio/theine-8                         	       2	 473752584 ns/op	        79.54 hit%
+BenchmarkHitRatio/theine-8                         	       2	 474932854 ns/op	        79.49 hit%
+BenchmarkHitRatio/theine-8                         	       2	 470499792 ns/op	        79.51 hit%
+BenchmarkHitRatio/theine-8                         	       1	 520449625 ns/op	        79.54 hit%
+BenchmarkHitRatio/theine-8                         	       2	 464573334 ns/op	        79.50 hit%
+BenchmarkHitRatio/theine-8                         	       2	 482350062 ns/op	        79.50 hit%
+BenchmarkHitRatio/theine-8                         	       2	 486207208 ns/op	        79.54 hit%
+BenchmarkHitRatio/theine-8                         	       2	 470080688 ns/op	        79.54 hit%
+BenchmarkHitRatio/bigcache-8                       	       3	 214667597 ns/op	        71.67 hit%
+BenchmarkHitRatio/bigcache-8                       	       3	 212929847 ns/op	        71.67 hit%
+BenchmarkHitRatio/bigcache-8                       	       3	 219843833 ns/op	        71.67 hit%
+BenchmarkHitRatio/bigcache-8                       	       3	 213760708 ns/op	        71.67 hit%
+BenchmarkHitRatio/bigcache-8                       	       3	 213380903 ns/op	        71.67 hit%
+BenchmarkHitRatio/bigcache-8                       	       3	 214408125 ns/op	        71.67 hit%
+BenchmarkHitRatio/bigcache-8                       	       3	 217623222 ns/op	        71.67 hit%
+BenchmarkHitRatio/bigcache-8                       	       3	 214027292 ns/op	        71.67 hit%
+BenchmarkHitRatio/bigcache-8                       	       3	 213313000 ns/op	        71.67 hit%
+BenchmarkHitRatio/bigcache-8                       	       3	 214425195 ns/op	        71.67 hit%
+BenchmarkHitRatio/freecache-8                      	       2	 261477938 ns/op	        74.04 hit%
+BenchmarkHitRatio/freecache-8                      	       2	 254477730 ns/op	        74.15 hit%
+BenchmarkHitRatio/freecache-8                      	       2	 251528250 ns/op	        74.04 hit%
+BenchmarkHitRatio/freecache-8                      	       2	 251816604 ns/op	        74.04 hit%
+BenchmarkHitRatio/freecache-8                      	       2	 254376375 ns/op	        74.04 hit%
+BenchmarkHitRatio/freecache-8                      	       2	 251274271 ns/op	        74.04 hit%
+BenchmarkHitRatio/freecache-8                      	       2	 254002520 ns/op	        74.15 hit%
+BenchmarkHitRatio/freecache-8                      	       2	 253760000 ns/op	        74.04 hit%
+BenchmarkHitRatio/freecache-8                      	       2	 253113458 ns/op	        74.04 hit%
+BenchmarkHitRatio/freecache-8                      	       2	 251367958 ns/op	        74.04 hit%
+BenchmarkParallelGetHitView-8                      	16845848	        39.37 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHitView-8                      	15046376	        37.73 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHitView-8                      	13886973	        38.18 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHitView-8                      	14555686	        38.10 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHitView-8                      	14182399	        46.44 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHitView-8                      	12491899	        45.68 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHitView-8                      	13431156	        39.13 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHitView-8                      	13949770	        37.07 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHitView-8                      	14357529	        37.36 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallelGetHitView-8                      	14198872	        37.38 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStampede/cachex-8                         	     532	   1190161 ns/op	         1.000 loads/key
+BenchmarkStampede/cachex-8                         	     488	   1242692 ns/op	         1.000 loads/key
+BenchmarkStampede/cachex-8                         	     482	   1246463 ns/op	         1.000 loads/key
+BenchmarkStampede/cachex-8                         	     498	   1242023 ns/op	         1.000 loads/key
+BenchmarkStampede/cachex-8                         	     487	   1235390 ns/op	         1.000 loads/key
+BenchmarkStampede/cachex-8                         	     489	   1227378 ns/op	         1.000 loads/key
+BenchmarkStampede/cachex-8                         	     484	   1231986 ns/op	         1.000 loads/key
+BenchmarkStampede/cachex-8                         	     498	   1237444 ns/op	         1.000 loads/key
+BenchmarkStampede/cachex-8                         	     486	   1231113 ns/op	         1.000 loads/key
+BenchmarkStampede/cachex-8                         	     496	   1243510 ns/op	         1.000 loads/key
+BenchmarkStampede/otter-8                          	     510	   1199291 ns/op	         1.000 loads/key
+BenchmarkStampede/otter-8                          	     513	   1241561 ns/op	         1.000 loads/key
+BenchmarkStampede/otter-8                          	     471	   1262312 ns/op	         1.000 loads/key
+BenchmarkStampede/otter-8                          	     481	   1261912 ns/op	         1.000 loads/key
+BenchmarkStampede/otter-8                          	     478	   1257982 ns/op	         1.000 loads/key
+BenchmarkStampede/otter-8                          	     480	   1269266 ns/op	         1.000 loads/key
+BenchmarkStampede/otter-8                          	     478	   1233241 ns/op	         1.000 loads/key
+BenchmarkStampede/otter-8                          	     478	   1227918 ns/op	         1.000 loads/key
+BenchmarkStampede/otter-8                          	     457	   1263043 ns/op	         1.000 loads/key
+BenchmarkStampede/otter-8                          	     478	   1262255 ns/op	         1.000 loads/key
+BenchmarkStampede/theine-8                         	     465	   1283495 ns/op	         1.000 loads/key
+BenchmarkStampede/theine-8                         	     475	   1299630 ns/op	         1.000 loads/key
+BenchmarkStampede/theine-8                         	     469	   1296954 ns/op	         1.000 loads/key
+BenchmarkStampede/theine-8                         	     468	   1242449 ns/op	         1.000 loads/key
+BenchmarkStampede/theine-8                         	     502	   1210251 ns/op	         1.000 loads/key
+BenchmarkStampede/theine-8                         	     470	   1240364 ns/op	         1.000 loads/key
+BenchmarkStampede/theine-8                         	     507	   1190166 ns/op	         1.000 loads/key
+BenchmarkStampede/theine-8                         	     500	   1299055 ns/op	         1.000 loads/key
+BenchmarkStampede/theine-8                         	     462	   1447210 ns/op	         1.000 loads/key
+BenchmarkStampede/theine-8                         	     506	   1248432 ns/op	         1.000 loads/key
+BenchmarkStampede/hashicorp-lru_(cache-aside)-8    	     470	   1246785 ns/op	        64.00 loads/key
+BenchmarkStampede/hashicorp-lru_(cache-aside)-8    	     494	   1234130 ns/op	        64.00 loads/key
+BenchmarkStampede/hashicorp-lru_(cache-aside)-8    	     436	   1363011 ns/op	        63.94 loads/key
+BenchmarkStampede/hashicorp-lru_(cache-aside)-8    	     475	   1283011 ns/op	        63.93 loads/key
+BenchmarkStampede/hashicorp-lru_(cache-aside)-8    	     492	   1269529 ns/op	        64.00 loads/key
+BenchmarkStampede/hashicorp-lru_(cache-aside)-8    	     478	   1294993 ns/op	        63.95 loads/key
+BenchmarkStampede/hashicorp-lru_(cache-aside)-8    	     469	   1254736 ns/op	        63.91 loads/key
+BenchmarkStampede/hashicorp-lru_(cache-aside)-8    	     490	   1224703 ns/op	        64.00 loads/key
+BenchmarkStampede/hashicorp-lru_(cache-aside)-8    	     495	   1211835 ns/op	        64.00 loads/key
+BenchmarkStampede/hashicorp-lru_(cache-aside)-8    	     488	   1252255 ns/op	        64.00 loads/key
+BenchmarkStampede/ristretto_(cache-aside)-8        	     435	   1371983 ns/op	        64.00 loads/key
+BenchmarkStampede/ristretto_(cache-aside)-8        	     446	   1340523 ns/op	        64.00 loads/key
+BenchmarkStampede/ristretto_(cache-aside)-8        	     448	   1381497 ns/op	        64.00 loads/key
+BenchmarkStampede/ristretto_(cache-aside)-8        	     458	   1388434 ns/op	        64.00 loads/key
+BenchmarkStampede/ristretto_(cache-aside)-8        	     453	   1358802 ns/op	        64.00 loads/key
+BenchmarkStampede/ristretto_(cache-aside)-8        	     447	   1320679 ns/op	        63.86 loads/key
+BenchmarkStampede/ristretto_(cache-aside)-8        	     436	   1381612 ns/op	        64.00 loads/key
+BenchmarkStampede/ristretto_(cache-aside)-8        	     446	   1385933 ns/op	        63.87 loads/key
+BenchmarkStampede/ristretto_(cache-aside)-8        	     446	   1342603 ns/op	        64.00 loads/key
+BenchmarkStampede/ristretto_(cache-aside)-8        	     452	   1384891 ns/op	        64.00 loads/key
+BenchmarkStampede/bigcache_(cache-aside)-8         	     464	   1314279 ns/op	        64.00 loads/key
+BenchmarkStampede/bigcache_(cache-aside)-8         	     470	   1313596 ns/op	        64.00 loads/key
+BenchmarkStampede/bigcache_(cache-aside)-8         	     458	   1325131 ns/op	        63.99 loads/key
+BenchmarkStampede/bigcache_(cache-aside)-8         	     470	   1306269 ns/op	        64.00 loads/key
+BenchmarkStampede/bigcache_(cache-aside)-8         	     448	   1306538 ns/op	        64.00 loads/key
+BenchmarkStampede/bigcache_(cache-aside)-8         	     472	   1305442 ns/op	        64.00 loads/key
+BenchmarkStampede/bigcache_(cache-aside)-8         	     470	   1319680 ns/op	        64.00 loads/key
+BenchmarkStampede/bigcache_(cache-aside)-8         	     476	   1313660 ns/op	        64.00 loads/key
+BenchmarkStampede/bigcache_(cache-aside)-8         	     463	   1319430 ns/op	        64.00 loads/key
+BenchmarkStampede/bigcache_(cache-aside)-8         	     459	   1283435 ns/op	        64.00 loads/key
+BenchmarkStampede/freecache_(cache-aside)-8        	     462	   1275383 ns/op	        64.00 loads/key
+BenchmarkStampede/freecache_(cache-aside)-8        	     489	   1277530 ns/op	        64.00 loads/key
+BenchmarkStampede/freecache_(cache-aside)-8        	     474	   1315210 ns/op	        63.87 loads/key
+BenchmarkStampede/freecache_(cache-aside)-8        	     448	   1310425 ns/op	        64.00 loads/key
+BenchmarkStampede/freecache_(cache-aside)-8        	     464	   1362849 ns/op	        64.00 loads/key
+BenchmarkStampede/freecache_(cache-aside)-8        	     498	   1253707 ns/op	        64.00 loads/key
+BenchmarkStampede/freecache_(cache-aside)-8        	     477	   1264522 ns/op	        64.00 loads/key
+BenchmarkStampede/freecache_(cache-aside)-8        	     496	   1239977 ns/op	        64.00 loads/key
+BenchmarkStampede/freecache_(cache-aside)-8        	     451	   1229425 ns/op	        64.00 loads/key
+BenchmarkStampede/freecache_(cache-aside)-8        	     483	   1260361 ns/op	        64.00 loads/key
+BenchmarkStampede/go-cache_(cache-aside)-8         	     468	   1204752 ns/op	        64.00 loads/key
+BenchmarkStampede/go-cache_(cache-aside)-8         	     489	   1251633 ns/op	        64.00 loads/key
+BenchmarkStampede/go-cache_(cache-aside)-8         	     496	   1287219 ns/op	        64.00 loads/key
+BenchmarkStampede/go-cache_(cache-aside)-8         	     505	   1217092 ns/op	        64.00 loads/key
+BenchmarkStampede/go-cache_(cache-aside)-8         	     486	   1251694 ns/op	        64.00 loads/key
+BenchmarkStampede/go-cache_(cache-aside)-8         	     489	   1254102 ns/op	        64.00 loads/key
+BenchmarkStampede/go-cache_(cache-aside)-8         	     505	   1237317 ns/op	        64.00 loads/key
+BenchmarkStampede/go-cache_(cache-aside)-8         	     445	   1270835 ns/op	        64.00 loads/key
+BenchmarkStampede/go-cache_(cache-aside)-8         	     409	   1323188 ns/op	        64.00 loads/key
+BenchmarkStampede/go-cache_(cache-aside)-8         	     490	   1196709 ns/op	        64.00 loads/key
+PASS
+ok  	github.com/bakhod1r/cachex/bench	278.273s

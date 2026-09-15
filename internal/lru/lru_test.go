@@ -381,3 +381,67 @@ func TestNewEntryNotEvictedWhenAllVisited(t *testing.T) {
 		t.Fatalf("Len = %d, want 3", c.Len())
 	}
 }
+
+func TestSetOwnedStoresWithoutCopy(t *testing.T) {
+	c, _ := newTest(Options{MaxEntries: 4})
+	v := []byte("abc")
+	if !c.SetOwned("k", v, 0) {
+		t.Fatal("SetOwned rejected")
+	}
+	got, ok := c.Get("k")
+	if !ok || string(got) != "abc" {
+		t.Fatalf("Get = %q, %v", got, ok)
+	}
+	if &got[0] != &v[0] {
+		t.Fatal("SetOwned copied the value")
+	}
+	if st := c.Stats(); st.Bytes != int64(len("k")+len(v))+entryOverhead {
+		t.Fatalf("Bytes = %d", st.Bytes)
+	}
+}
+
+func TestSetOwnedRejectsOversize(t *testing.T) {
+	c, _ := newTest(Options{MaxBytes: entryOverhead + 4})
+	c.Set("k", []byte("a"), 0)
+	if c.SetOwned("k", make([]byte, 100), 0) {
+		t.Fatal("oversize SetOwned accepted")
+	}
+	if _, ok := c.Get("k"); ok {
+		t.Fatal("stale value kept after rejected SetOwned")
+	}
+}
+
+// Get runs lock-free; racing overwrites, deletes and evictions must only ever yield a
+// value that was written for that key.
+func TestLockFreeGetSeesOnlyOwnValues(t *testing.T) {
+	c := newCache(Options{MaxEntries: 64, Shards: 2})
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for g := range 4 {
+		wg.Go(func() {
+			for i := 0; ; i++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				k := strconv.Itoa((i * (g + 1)) % 200)
+				if v, ok := c.Get(k); ok && string(v[:len(k)]) != k {
+					t.Errorf("Get(%s) = %q", k, v)
+					return
+				}
+			}
+		})
+	}
+	for i := range 200_000 {
+		k := strconv.Itoa(i % 200)
+		switch i % 7 {
+		case 0:
+			c.Delete(k)
+		default:
+			c.Set(k, []byte(k+":"+strconv.Itoa(i)), 0)
+		}
+	}
+	close(stop)
+	wg.Wait()
+}

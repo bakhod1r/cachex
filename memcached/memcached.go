@@ -43,8 +43,9 @@ type Store struct {
 }
 
 var (
-	_ cachex.Store    = (*Store)(nil)
-	_ cachex.CASStore = (*Store)(nil)
+	_ cachex.Store          = (*Store)(nil)
+	_ cachex.CASStore       = (*Store)(nil)
+	_ cachex.MultiCASGetter = (*Store)(nil)
 )
 
 // New builds a Store. It does not dial; connections are lazy.
@@ -162,6 +163,30 @@ func (s *Store) Gets(ctx context.Context, key string) ([]byte, any, error) {
 		return nil, nil, mapErr(err)
 	}
 	return it.Value, it, nil
+}
+
+// GetsMulti fetches many keys with CAS tokens in one round trip.
+func (s *Store) GetsMulti(ctx context.Context, keys []string) (map[string][]byte, map[string]any, error) {
+	done, err := s.begin(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer done()
+	wire := make([]string, len(keys))
+	back := make(map[string]string, len(keys))
+	for i, k := range keys {
+		wire[i] = normalizeKey(s.prefix, k)
+		back[wire[i]] = k
+	}
+	items, err := s.client.GetMulti(wire)
+	if err != nil {
+		return nil, nil, mapErr(err)
+	}
+	vals, toks := make(map[string][]byte, len(items)), make(map[string]any, len(items))
+	for wk, it := range items {
+		vals[back[wk]], toks[back[wk]] = it.Value, it
+	}
+	return vals, toks, nil
 }
 
 // CompareAndSwap stores val only if key is unchanged since Gets; ErrNotStored on conflict.

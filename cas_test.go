@@ -149,3 +149,33 @@ func TestCrossNodeDeleteDuringColdLoadNegativeCache(t *testing.T) {
 		t.Fatalf("stale negative entry survived Delete: %q %v", v, err)
 	}
 }
+
+func TestCrossNodeDeleteDuringMultiLoad(t *testing.T) {
+	e := newEnv(t)
+	b := secondNode(t, e)
+	_ = e.c.Set(ctx, "warm", []byte("v1"), time.Second)
+	e.clock.Advance(2 * time.Second) // expired: GetOrLoadMulti reloads it (present in L2)
+	started, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = e.c.GetOrLoadMulti(context.Background(), []string{"cold", "warm", "kept"}, time.Minute,
+			func(context.Context, []string) (map[string][]byte, error) {
+				close(started)
+				<-release
+				return map[string][]byte{"cold": []byte("old"), "warm": []byte("old"), "kept": []byte("k")}, nil
+			})
+	}()
+	<-started
+	_ = b.Delete(ctx, "cold")
+	_ = b.Delete(ctx, "warm")
+	close(release)
+	<-done
+	for _, k := range []string{"cold", "warm"} {
+		if v, err := b.Get(ctx, k); !errors.Is(err, cachex.ErrMiss) {
+			t.Fatalf("%s: multi load undid cross-node Delete: %q %v", k, v, err)
+		}
+	}
+	if v, err := b.Get(ctx, "kept"); err != nil || string(v) != "k" {
+		t.Fatalf("untouched key must be cached: %q %v", v, err)
+	}
+}

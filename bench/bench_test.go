@@ -10,10 +10,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Yiling-J/theine-go"
+	"github.com/allegro/bigcache/v3"
 	"github.com/bakhod1r/cachex"
+	"github.com/coocood/freecache"
 	"github.com/dgraph-io/ristretto/v2"
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/maypok86/otter/v2"
+	gocache "github.com/patrickmn/go-cache"
 )
 
 const (
@@ -60,6 +64,46 @@ func (a otterC) Get(k string) ([]byte, bool) { return a.c.GetIfPresent(k) }
 func (a otterC) Set(k string, v []byte)      { a.c.Set(k, v) }
 func (a otterC) Close()                      {}
 
+type theineC struct{ c *theine.Cache[string, []byte] }
+
+func (a theineC) Get(k string) ([]byte, bool) { return a.c.Get(k) }
+func (a theineC) Set(k string, v []byte)      { a.c.Set(k, v, 1) }
+func (a theineC) Close()                      { a.c.Close() }
+
+type bigC struct{ c *bigcache.BigCache }
+
+func (a bigC) Get(k string) ([]byte, bool) {
+	v, err := a.c.Get(k)
+	return v, err == nil
+}
+func (a bigC) Set(k string, v []byte) { _ = a.c.Set(k, v) }
+func (a bigC) Close()                 { _ = a.c.Close() }
+
+type freeC struct{ c *freecache.Cache }
+
+func (a freeC) Get(k string) ([]byte, bool) {
+	v, err := a.c.Get([]byte(k))
+	return v, err == nil
+}
+func (a freeC) Set(k string, v []byte) { _ = a.c.Set([]byte(k), v, 0) }
+func (a freeC) Close()                 {}
+
+type goC struct{ c *gocache.Cache }
+
+func (a goC) Get(k string) ([]byte, bool) {
+	v, ok := a.c.Get(k)
+	if !ok {
+		return nil, false
+	}
+	return v.([]byte), true
+}
+func (a goC) Set(k string, v []byte) { a.c.Set(k, v, gocache.NoExpiration) }
+func (a goC) Close()                 {}
+
+// bytesPerEntry sizes the byte-bounded caches (bigcache, freecache) so they hold
+// roughly the same number of 64-byte values as the entry-bounded ones.
+const bytesPerEntry = 128
+
 type lib struct {
 	name string
 	make func(capacity int) cache
@@ -94,7 +138,34 @@ var libs = []lib{
 	{"otter", func(n int) cache {
 		return otterC{otter.Must(&otter.Options[string, []byte]{MaximumSize: n})}
 	}},
+	{"theine", func(n int) cache {
+		c, err := theine.NewBuilder[string, []byte](int64(n)).Build()
+		if err != nil {
+			panic(err)
+		}
+		return theineC{c}
+	}},
+	{"bigcache", func(n int) cache {
+		cfg := bigcache.DefaultConfig(time.Hour)
+		cfg.CleanWindow = 0
+		cfg.Verbose = false
+		cfg.MaxEntriesInWindow = n
+		cfg.HardMaxCacheSize = max(1, n*bytesPerEntry/(1<<20))
+		c, err := bigcache.New(context.Background(), cfg)
+		if err != nil {
+			panic(err)
+		}
+		return bigC{c}
+	}},
+	{"freecache", func(n int) cache {
+		return freeC{freecache.NewCache(max(512*1024, n*bytesPerEntry))}
+	}},
+	// go-cache has no size bound: excluded from BenchmarkHitRatio.
+	{"go-cache", func(int) cache { return goC{gocache.New(gocache.NoExpiration, 0)} }},
 }
+
+// bounded reports whether l evicts, i.e. whether its hit ratio is comparable.
+func bounded(l lib) bool { return l.name != "go-cache" }
 
 var (
 	keys  = makeKeys(keyspace)
@@ -175,6 +246,9 @@ func BenchmarkHitRatio(b *testing.B) {
 		trace[i] = z.Uint64()
 	}
 	for _, l := range libs {
+		if !bounded(l) {
+			continue
+		}
 		b.Run(l.name, func(b *testing.B) {
 			var ratio float64
 			for range b.N {
@@ -194,4 +268,24 @@ func BenchmarkHitRatio(b *testing.B) {
 			b.ReportMetric(ratio*100, "hit%")
 		})
 	}
+}
+
+// BenchmarkParallelGetHitView is ParallelGetHit with cachex read through GetView, the
+// zero-copy API; the other libraries already return shared slices from Get.
+func BenchmarkParallelGetHitView(b *testing.B) {
+	const hot = capacity
+	c := libs[0].make(hot * 2).(cachexC)
+	defer c.Close()
+	for _, k := range keys[:hot] {
+		c.Set(k, value)
+	}
+	nop := func([]byte) error { return nil }
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		r := newRand()
+		for pb.Next() {
+			_ = c.c.GetView(context.Background(), keys[r.IntN(hot)], nop)
+		}
+	})
 }

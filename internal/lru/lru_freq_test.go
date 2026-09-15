@@ -83,7 +83,7 @@ func TestFrequencyEvictsLeastFrequentOfExamined(t *testing.T) {
 	// Spend visited bits without evicting: clear them directly (white-box).
 	s := c.shards[0]
 	for el := s.ll.Front(); el != nil; el = el.Next() {
-		el.Value.(*entry).visited.Store(false)
+		el.visited.Store(false)
 	}
 	c.Set("e", []byte("e"), 0)
 	if len(r.evs) != 1 || r.evs[0] != "b:0" {

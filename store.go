@@ -44,6 +44,12 @@ type CASStore interface {
 	CompareAndSwap(ctx context.Context, key string, val []byte, token any, ttl time.Duration) error
 }
 
+// MultiCASGetter is an optional CASStore capability: Gets for many keys in one round trip,
+// used by GetOrLoadMulti. Absent keys are missing from both maps.
+type MultiCASGetter interface {
+	GetsMulti(ctx context.Context, keys []string) (vals map[string][]byte, tokens map[string]any, err error)
+}
+
 // Invalidation tells other processes to drop L1 copies.
 type Invalidation struct {
 	Keys      []string // single keys removed with Delete

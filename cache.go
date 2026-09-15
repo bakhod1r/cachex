@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/bakhod1r/cachex/internal/breaker"
+	"github.com/bakhod1r/cachex/internal/clock"
 	"github.com/bakhod1r/cachex/internal/envelope"
 	"github.com/bakhod1r/cachex/internal/flight"
 	"github.com/bakhod1r/cachex/internal/lru"
@@ -194,7 +195,6 @@ func (c *Cache) getMulti(ctx context.Context, keys []string) (map[string][]byte,
 		}
 		if raw, ok := c.l1.Get(k); ok {
 			if e, err := envelope.Decode(raw); err == nil {
-				c.st.l1Hits.Add(1)
 				switch {
 				case e.Expired(now):
 				case e.Flags&envelope.FlagTombstone != 0:
@@ -204,8 +204,8 @@ func (c *Cache) getMulti(ctx context.Context, keys []string) (map[string][]byte,
 				}
 				continue
 			}
+			c.st.l1Corrupt.Add(1)
 		}
-		c.st.l1Misses.Add(1)
 		rest = append(rest, k)
 	}
 	if len(rest) == 0 || c.l2 == nil {
@@ -335,6 +335,7 @@ func (c *Cache) GetOrLoadMulti(ctx context.Context, keys []string, ttl time.Dura
 	}
 	lctx, cancel := context.WithTimeout(ctx, c.cfg.loadTimeout)
 	defer cancel()
+	obs := c.observeMulti(lctx, missing) // before the loader reads its source
 	start := c.cfg.clock.Now()
 	loaded, err := safeLoad(func() (map[string][]byte, error) { return load(lctx, missing) })
 	c.st.loads.Add(1)
@@ -354,9 +355,9 @@ func (c *Cache) GetOrLoadMulti(ctx context.Context, keys []string, ttl time.Dura
 		}
 		switch {
 		case ok:
-			c.store(ctx, k, envelope.Entry{Value: v, Delta: delta}, ttl)
+			c.commit(ctx, k, envelope.Entry{Value: v, Delta: delta}, ttl, obs[k])
 		case c.cfg.negativeTTL > 0:
-			c.store(ctx, k, envelope.Entry{Flags: envelope.FlagTombstone}, c.cfg.negativeTTL)
+			c.commit(ctx, k, envelope.Entry{Flags: envelope.FlagTombstone}, c.cfg.negativeTTL, obs[k])
 		}
 	}
 	return out, nil
@@ -574,12 +575,11 @@ func (c *Cache) lookup(ctx context.Context, key string) (envelope.Entry, bool) {
 func (c *Cache) lookupAt(ctx context.Context, key string, now int64) (envelope.Entry, bool) {
 	if raw, ok := c.l1.GetAt(key, now); ok {
 		if e, err := envelope.Decode(raw); err == nil {
-			c.st.l1Hits.Add(1)
 			return e, true
 		}
+		c.st.l1Corrupt.Add(1)
 		c.l1.Delete(key)
 	}
-	c.st.l1Misses.Add(1)
 	if c.l2 == nil {
 		return envelope.Entry{}, false
 	}
@@ -655,6 +655,37 @@ func (c *Cache) observe(ctx context.Context, key string) observation {
 	return observation{}
 }
 
+// observeMulti is observe for many keys, in one round trip when the store is a MultiCASGetter.
+// Keys it could not observe get the zero observation (plain Set).
+func (c *Cache) observeMulti(ctx context.Context, keys []string) map[string]observation {
+	cs, ok := c.l2.(CASStore)
+	if !ok {
+		return nil
+	}
+	mg, ok := c.l2.(MultiCASGetter)
+	if !ok {
+		out := make(map[string]observation, len(keys))
+		for _, k := range keys {
+			out[k] = c.observe(ctx, k)
+		}
+		return out
+	}
+	var toks map[string]any
+	if err := c.l2Call(func() error {
+		var err error
+		_, toks, err = mg.GetsMulti(ctx, keys)
+		return err
+	}); err != nil {
+		return nil
+	}
+	out := make(map[string]observation, len(keys))
+	for _, k := range keys {
+		tok, present := toks[k]
+		out[k] = observation{cas: cs, present: present, token: tok}
+	}
+	return out
+}
+
 // commit writes e to L2 then L1. With a CAS observation the L2 write is conditional; if
 // another writer (Set, Delete marker, newer load) got there first, nothing is cached.
 func (c *Cache) commit(ctx context.Context, key string, e envelope.Entry, ttl time.Duration, obs observation) {
@@ -687,7 +718,7 @@ func (c *Cache) commit(ctx context.Context, key string, e envelope.Entry, ttl ti
 			hold = c.cfg.degradedL1TTL
 		}
 	}
-	c.l1.Set(key, raw, min(hold, l2ttl))
+	c.l1.SetOwned(key, raw, min(hold, l2ttl)) // raw is freshly encoded and never mutated
 }
 
 // l2Call runs op through the circuit breaker. Misses, semantic errors, caller cancellation
@@ -744,7 +775,12 @@ func (c *Cache) ttl(ttl time.Duration) time.Duration {
 	return ttl
 }
 
-func (c *Cache) nowNs() int64 { return c.cfg.clock.Now().UnixNano() }
+func (c *Cache) nowNs() int64 {
+	if _, ok := c.cfg.clock.(realClock); ok {
+		return clock.NowNano() // skips the wall-clock read time.Now makes on every call
+	}
+	return c.cfg.clock.Now().UnixNano()
+}
 
 func clone(b []byte) []byte {
 	out := make([]byte, len(b))

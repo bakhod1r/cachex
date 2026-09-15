@@ -13,8 +13,9 @@ import (
 )
 
 var (
-	_ cachex.Store    = (*Store)(nil)
-	_ cachex.CASStore = (*Store)(nil)
+	_ cachex.Store          = (*Store)(nil)
+	_ cachex.CASStore       = (*Store)(nil)
+	_ cachex.MultiCASGetter = (*Store)(nil)
 )
 
 type entry struct {
@@ -163,6 +164,21 @@ func (s *Store) Gets(ctx context.Context, key string) ([]byte, any, error) {
 		return nil, nil, cachex.ErrMiss
 	}
 	return append([]byte{}, e.val...), e.cas, nil
+}
+
+// GetsMulti is Gets for many keys under one lock.
+func (s *Store) GetsMulti(ctx context.Context, keys []string) (map[string][]byte, map[string]any, error) {
+	defer s.mu.Unlock()
+	if err := s.begin(ctx); err != nil {
+		return nil, nil, err
+	}
+	vals, toks := make(map[string][]byte, len(keys)), make(map[string]any, len(keys))
+	for _, k := range keys {
+		if e, ok := s.live(k); ok {
+			vals[k], toks[k] = append([]byte{}, e.val...), e.cas
+		}
+	}
+	return vals, toks, nil
 }
 
 // CompareAndSwap stores val only if key has not been written since Gets returned token.
