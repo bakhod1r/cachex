@@ -74,6 +74,7 @@ func New(opts ...Option) (*Cache, error) {
 		MaxEntries: cfg.l1MaxEntries,
 		MaxBytes:   cfg.l1MaxBytes,
 		Shards:     cfg.shards,
+		Frequency:  cfg.l1Frequency,
 		Now:        c.nowNs,
 	})
 	c.br = breaker.New(breaker.Config{Now: cfg.clock.Now})
@@ -115,6 +116,25 @@ func (c *Cache) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, ErrMiss
 	}
 	return clone(e.Value), nil
+}
+
+// GetView calls fn with the cached value without copying it, or returns ErrMiss. The slice
+// is valid only during fn and must not be modified or retained; copy it to keep it. A later
+// Set of the same key doesn't change a slice already passed to fn. fn's error is returned.
+// On an L1 hit GetView does not allocate.
+func (c *Cache) GetView(ctx context.Context, key string, fn func(val []byte) error) error {
+	if fn == nil {
+		return errors.New("cachex: nil view func")
+	}
+	if err := c.check(key); err != nil {
+		return err
+	}
+	now := c.nowNs()
+	e, ok := c.lookupAt(ctx, key, now)
+	if !ok || e.Flags&envelope.FlagTombstone != 0 || e.Expired(now) {
+		return ErrMiss
+	}
+	return fn(e.Value)
 }
 
 // Set writes val to L2 then L1. ttl <= 0 uses the default TTL. A failed L2 write is not

@@ -74,6 +74,18 @@ v, err := c.GetOrLoad(ctx, "user:42", time.Minute, func(ctx context.Context) ([]
   loading. `Stats.NegativeHits`.
 - Background refreshes are capped at 16 concurrent; other loader errors are returned, never cached.
 
+## Zero-copy reads
+
+```go
+err := c.GetView(ctx, "user:42", func(v []byte) error {
+    return json.Unmarshal(v, &u) // v is valid only inside fn: don't modify or keep it
+})
+```
+
+`Get` returns a private copy (one allocation); `GetView` hands the cached bytes to `fn` and
+doesn't allocate on an L1 hit. A concurrent `Set` of the same key never changes a slice that
+`fn` is already reading.
+
 ## GetMulti
 
 ```go
@@ -230,6 +242,7 @@ bounds still apply.
 | `WithL1MaxEntries(int)` | `100000` | L1 entry cap (0 = unlimited) |
 | `WithL1MaxBytes(int64)` | `0` (unlimited) | L1 approximate byte cap |
 | `WithShards(int)` | `0` (auto) | L1 shard count |
+| `WithL1Frequency(bool)` | `true` | Frequency-aware L1 eviction (count-min sketch) |
 | `WithDefaultTTL(d)` | `5m` | TTL when `ttl <= 0` |
 | `WithL1TTL(d)` | `10s` | Max L1 lifetime; cross-node staleness bound |
 | `WithDegradedL1TTL(d)` | `1s` | L1 TTL after a failed L2 write |

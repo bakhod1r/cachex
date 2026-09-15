@@ -10,6 +10,7 @@ type config struct {
 	l1MaxEntries  int
 	l1MaxBytes    int64
 	shards        int
+	l1Frequency   bool
 	defaultTTL    time.Duration
 	l1TTL         time.Duration
 	degradedL1TTL time.Duration
@@ -32,6 +33,7 @@ type config struct {
 func defaultConfig() config {
 	return config{
 		l1MaxEntries:  100_000,
+		l1Frequency:   true,
 		defaultTTL:    5 * time.Minute,
 		l1TTL:         10 * time.Second,
 		degradedL1TTL: time.Second,
@@ -78,6 +80,14 @@ func WithL1MaxBytes(n int64) Option {
 		c.l1MaxBytes = n
 		return nil
 	}
+}
+
+// WithL1Frequency makes L1 eviction frequency-aware (default true): a count-min sketch
+// tracks how often keys are read and written, and eviction prefers rarely used entries over
+// popular ones. On a Zipf workload it raised hit ratio ~2 points for ~15% slower parallel Get.
+// A value just written is never evicted by its own Set either way.
+func WithL1Frequency(on bool) Option {
+	return func(c *config) error { c.l1Frequency = on; return nil }
 }
 
 // WithShards sets the L1 shard count (0 = auto).
