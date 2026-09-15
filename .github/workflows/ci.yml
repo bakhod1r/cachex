@@ -48,7 +48,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [".", "prometheus", "redis", "bench", "nats"]
+        module: [".", "prometheus", "redis", "bench", "nats", "kafka", "rabbitmq"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -125,4 +125,55 @@ jobs:
       - name: test
         env:
           NATS_URL: nats://localhost:4222
+        run: go test -race -tags=integration -count=1 ./...
+
+  kafka:
+    runs-on: ubuntu-latest
+    services:
+      kafka:
+        image: apache/kafka:3.8.0
+        ports:
+          - 9092:9092
+        options: >-
+          --health-cmd "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"
+          --health-interval 5s
+          --health-timeout 10s
+          --health-retries 20
+          --health-start-period 10s
+    defaults:
+      run:
+        working-directory: kafka
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: test
+        env:
+          KAFKA_BROKERS: localhost:9092
+        run: go test -race -tags=integration -count=1 ./...
+
+  rabbitmq:
+    runs-on: ubuntu-latest
+    services:
+      rabbitmq:
+        image: rabbitmq:3-alpine
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q check_port_connectivity"
+          --health-interval 5s
+          --health-timeout 10s
+          --health-retries 20
+    defaults:
+      run:
+        working-directory: rabbitmq
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: test
+        env:
+          RABBITMQ_URL: amqp://guest:guest@127.0.0.1:5672/
         run: go test -race -tags=integration -count=1 ./...

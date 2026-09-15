@@ -198,6 +198,30 @@ inv, err := cachexredis.New(cachexredis.Config{Client: redis.NewClient(&redis.Op
 c, err := cachex.New(cachex.WithL2(store), cachex.WithInvalidator(inv))
 ```
 
+Other brokers, each a separate module with the same wire format and origin filtering:
+
+| Module | Transport | Delivery | Notes |
+|---|---|---|---|
+| `github.com/bakhod1r/cachex/redis` | Redis pub/sub | at-most-once | go-redis reconnects; messages during a disconnect are lost |
+| `github.com/bakhod1r/cachex/nats` | core NATS | at-most-once | not JetStream |
+| `github.com/bakhod1r/cachex/kafka` | Kafka topic, no consumer group | at-least-once while subscribed | topic must exist before `Subscribe`; each subscriber starts at the current end offsets |
+| `github.com/bakhod1r/cachex/rabbitmq` | fanout exchange, exclusive queue per subscriber | at-most-once | amqp091 doesn't reconnect; drops are reported via `OnError` |
+
+```go
+import cachexkafka "github.com/bakhod1r/cachex/kafka"
+
+inv, err := cachexkafka.New(cachexkafka.Config{Brokers: []string{"localhost:9092"}})
+defer inv.Close()
+
+import cachexrabbitmq "github.com/bakhod1r/cachex/rabbitmq"
+
+conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
+inv, err := cachexrabbitmq.New(cachexrabbitmq.Config{Conn: conn})
+```
+
+In every case a lost message only delays invalidation: the `WithL1TTL` and `WithVersionTTL`
+bounds still apply.
+
 ## Options
 
 | Option | Default | Meaning |
