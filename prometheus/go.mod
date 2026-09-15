@@ -3,7 +3,7 @@ module github.com/bakhod1r/cachex/prometheus
 go 1.25.3
 
 require (
-	github.com/bakhod1r/cachex v0.0.0-00010101000000-000000000000
+	github.com/bakhod1r/cachex v0.1.0
 	github.com/prometheus/client_golang v1.23.2
 )
 

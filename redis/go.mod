@@ -3,7 +3,7 @@ module github.com/bakhod1r/cachex/redis
 go 1.25.3
 
 require (
-	github.com/bakhod1r/cachex v0.0.0-00010101000000-000000000000
+	github.com/bakhod1r/cachex v0.1.0
 	github.com/redis/go-redis/v9 v9.22.0
 )
 
