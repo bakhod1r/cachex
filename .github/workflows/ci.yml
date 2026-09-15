@@ -25,6 +25,12 @@ jobs:
         run: go vet ./...
       - name: test
         run: go test -race -count=1 ./...
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          for m in . prometheus redis nats kafka rabbitmq bench; do
+            echo "== $m"; (cd "$m" && govulncheck ./...)
+          done
 
   integration:
     runs-on: ubuntu-latest
