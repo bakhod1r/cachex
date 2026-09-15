@@ -220,6 +220,22 @@ c, _ := cachex.New(
 
 Hooks run synchronously and must not call back into the Cache.
 
+## OpenTelemetry
+
+`github.com/bakhod1r/cachex/otel` (separate module) turns `Events` into spans and metrics.
+
+```go
+ev, err := cachexotel.Events() // global TracerProvider/MeterProvider by default
+c, _ := cachex.New(cachex.WithL2(store), cachex.WithEvents(cachex.MergeEvents(ev, cachex.SlogEvents(l))))
+```
+
+- Span `cachex.<op>` per operation with `cachex.tier` and `cachex.keys` (batches). `ErrMiss` and
+  `ErrNotFound` are not errors. Loader calls add a `cachex.load` span event.
+- Histograms `cachex.op.duration` (`op`, `tier`, `error`) and `cachex.load.duration` (`error`), in seconds.
+- Counters `cachex.l2.errors` (`op`), `cachex.breaker.transitions` (`from`, `to`),
+  `cachex.loader.panics`, `cachex.publish.errors`.
+- Keys are never recorded unless `WithKeyAttribute(true)` (span attribute only; PII and cardinality).
+
 ## Degradation (circuit breaker)
 
 All L2 calls go through a breaker (10s window, min 20 requests, opens at 50% failures,
