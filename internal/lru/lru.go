@@ -101,9 +101,9 @@ type evicted struct {
 }
 
 type shard struct {
-	mu    sync.Mutex             // guards writes: table mutations, ll, bytes, entry.size
+	mu    sync.Mutex            // guards writes: table mutations, ll, bytes, entry.size
 	tab   atomic.Pointer[table] // nil = empty; see table.go
-	ll    entryList // front = MRU
+	ll    entryList             // front = MRU
 	bytes int64
 	freq  *sketch.Sketch // nil unless Options.Frequency with a bound; lock-free
 
