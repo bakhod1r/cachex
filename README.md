@@ -236,6 +236,40 @@ c, _ := cachex.New(cachex.WithL2(store), cachex.WithEvents(cachex.MergeEvents(ev
   `cachex.loader.panics`, `cachex.publish.errors`.
 - Keys are never recorded unless `WithKeyAttribute(true)` (span attribute only; PII and cardinality).
 
+## Compression
+
+L2 values can be compressed; L1 always keeps the uncompressed value, so L1 reads and
+`GetView` cost nothing extra. The codec lives in a separate module:
+
+```go
+z, err := cachexzstd.New() // github.com/bakhod1r/cachex/zstd
+c, _ := cachex.New(cachex.WithL2(store), cachex.WithCompression(z, 512))
+```
+
+- Values of at least `minSize` bytes written by `Set`, `SetMulti`, `GetOrLoad` and
+  `GetOrLoadMulti` are compressed; a value is stored raw if compression fails or doesn't
+  make it smaller. Delete markers, cached `ErrNotFound`, load locks and namespace version
+  counters are never compressed.
+- Wire format: header byte 3 (formerly reserved, always 0) holds the codec id; 0 means raw.
+  Entries written by older versions decode unchanged. `payloadLen` is the stored
+  (compressed) length.
+- `WithDecompressors(codecs...)` reads compressed entries without compressing writes.
+- An entry a node can't decode (unknown codec id, corrupt data) is a miss, counted in
+  `Stats.DecodeErrors`; a loader then overwrites it. Older versions of cachex also see
+  compressed entries as corrupt, i.e. a miss.
+- Custom codecs implement `cachex.Compressor` with a stable, non-zero `ID()`
+  (`cachexzstd.ID` is 1) and must bound decompressed size themselves
+  (`cachexzstd.WithMaxDecodedSize`, default 256 MiB).
+
+Rolling deploy order:
+
+1. Deploy a version where every node can decode the codec
+   (`WithDecompressors(z)`), with compression still off.
+2. Once no old node remains, enable `WithCompression(z, minSize)`.
+
+Rolling back reverses the order: disable `WithCompression` first, keep the decoder until
+compressed entries have expired.
+
 ## Degradation (circuit breaker)
 
 All L2 calls go through a breaker (10s window, min 20 requests, opens at 50% failures,
@@ -322,6 +356,8 @@ bounds still apply.
 | `WithDeleteMarkerTTL(d)` | `2 x load timeout` | L2 Delete marker lifetime (`CASStore` only); must exceed load timeout |
 | `WithDistributedLock(ttl, poll)` | off | One loader per key across processes |
 | `WithInvalidator(Invalidator)` | none | Broadcast invalidations between processes |
+| `WithCompression(Compressor, minSize)` | off | Compress L2 values `>= minSize` bytes |
+| `WithDecompressors(Compressor...)` | none | Decode compressed L2 entries without compressing |
 | `WithClock(Clock)` | wall clock | Injectable clock for tests |
 
 ## Example

@@ -311,7 +311,7 @@ func (c *Cache) getL2Only(ctx context.Context, key string) ([]byte, error) {
 // accept decodes an L2 value, backfills L1 and returns a live value, ErrNotFound for a
 // live tombstone, or ErrMiss.
 func (c *Cache) accept(key string, raw []byte, now int64) ([]byte, error) {
-	e, err := envelope.Decode(raw)
+	e, l1raw, owned, err := c.decodeL2(raw)
 	if err != nil {
 		c.st.decodeErrors.Add(1)
 		return nil, ErrMiss
@@ -321,9 +321,7 @@ func (c *Cache) accept(key string, raw []byte, now int64) ([]byte, error) {
 		return nil, ErrMiss
 	}
 	c.st.l2Hits.Add(1)
-	if hold := c.l1Hold(e, now); hold > 0 {
-		c.l1.Set(key, raw, hold)
-	}
+	c.backfill(key, e, l1raw, owned, now)
 	switch {
 	case e.Expired(now):
 		return nil, ErrMiss
@@ -690,7 +688,7 @@ func (c *Cache) lookupAt(ctx context.Context, key string, now int64) (envelope.E
 		}
 		return envelope.Entry{}, TierMiss, false
 	}
-	e, err := envelope.Decode(raw)
+	e, l1raw, owned, err := c.decodeL2(raw)
 	if err != nil {
 		c.st.decodeErrors.Add(1)
 		return envelope.Entry{}, TierMiss, false
@@ -700,11 +698,20 @@ func (c *Cache) lookupAt(ctx context.Context, key string, now int64) (envelope.E
 		return envelope.Entry{}, TierMiss, false
 	}
 	c.st.l2Hits.Add(1)
-	now = c.nowNs() // L2 round trip took time
-	if hold := c.l1Hold(e, now); hold > 0 {
+	c.backfill(key, e, l1raw, owned, c.nowNs()) // L2 round trip took time
+	return e, TierL2, true
+}
+
+// backfill copies an L2 entry (uncompressed encoding raw) into L1 for its allowed hold.
+func (c *Cache) backfill(key string, e envelope.Entry, raw []byte, owned bool, now int64) {
+	hold := c.l1Hold(e, now)
+	switch {
+	case hold <= 0:
+	case owned:
+		c.l1.SetOwned(key, raw, hold)
+	default:
 		c.l1.Set(key, raw, hold)
 	}
-	return e, TierL2, true
 }
 
 // l1Hold is how long L1 may keep e: its remaining life (plus stale window), capped by L1 TTL.
@@ -791,6 +798,7 @@ func (c *Cache) commit(ctx context.Context, key string, e envelope.Entry, ttl ti
 	e.StoredAt = now
 	e.ExpireAt = now + int64(ttl)
 	raw := envelope.Encode(e)
+	l2raw := c.compressL2(e, raw) // L1 keeps raw: reads never decompress
 	l2ttl := ttl + c.cfg.staleWindow
 	hold := c.cfg.l1TTL
 	if c.l2 != nil {
@@ -805,11 +813,11 @@ func (c *Cache) commit(ctx context.Context, key string, e envelope.Entry, ttl ti
 		err := c.l2Call(name, func() error {
 			switch {
 			case obs.cas == nil:
-				return c.l2.Set(ctx, key, raw, l2ttl)
+				return c.l2.Set(ctx, key, l2raw, l2ttl)
 			case obs.present:
-				return obs.cas.CompareAndSwap(ctx, key, raw, obs.token, l2ttl)
+				return obs.cas.CompareAndSwap(ctx, key, l2raw, obs.token, l2ttl)
 			default:
-				return c.l2.Add(ctx, key, raw, l2ttl)
+				return c.l2.Add(ctx, key, l2raw, l2ttl)
 			}
 		})
 		if obs.cas != nil && (errors.Is(err, ErrNotStored) || errors.Is(err, ErrMiss)) {

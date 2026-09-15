@@ -26,6 +26,9 @@ type config struct {
 	lockPoll      time.Duration
 	markerTTL     time.Duration // 0 = 2 * loadTimeout
 	invalidator   Invalidator
+	compressor    Compressor // nil: L2 writes stay raw
+	compressMin   int
+	decompressors map[byte]Compressor
 	events        Events
 	clock         Clock
 	rand          func() float64

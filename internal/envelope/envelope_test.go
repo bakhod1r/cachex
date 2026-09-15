@@ -13,6 +13,7 @@ func TestRoundTrip(t *testing.T) {
 		{Value: []byte("hello"), ExpireAt: 100, StoredAt: 50, Delta: 7},
 		{Flags: FlagTombstone, StoredAt: -1, Delta: -5},
 		{Value: bytes.Repeat([]byte{0xff}, 4096), Flags: 0xff, ExpireAt: 1<<63 - 1, StoredAt: -1 << 63},
+		{Value: []byte("zz"), Codec: 7, ExpireAt: 9},
 	}
 	for i, c := range cases {
 		b := Encode(c)
@@ -23,7 +24,7 @@ func TestRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%d: %v", i, err)
 		}
-		if !bytes.Equal(got.Value, c.Value) || got.Flags != c.Flags || got.ExpireAt != c.ExpireAt ||
+		if !bytes.Equal(got.Value, c.Value) || got.Flags != c.Flags || got.Codec != c.Codec || got.ExpireAt != c.ExpireAt ||
 			got.StoredAt != c.StoredAt || got.Delta != c.Delta {
 			t.Fatalf("%d: got %+v want %+v", i, got, c)
 		}
@@ -56,7 +57,6 @@ func TestDecodeErrors(t *testing.T) {
 		{"trailing bytes", append(append([]byte(nil), good...), 0), ErrCorrupt},
 		{"bad magic", mut(func(b []byte) []byte { b[0] = 0; return b }), ErrCorrupt},
 		{"bad version", mut(func(b []byte) []byte { b[1] = 2; return b }), ErrVersion},
-		{"reserved nonzero", mut(func(b []byte) []byte { b[3] = 1; return b }), ErrCorrupt},
 		{"len too big", mut(func(b []byte) []byte { b[4] = 0xff; return b }), ErrCorrupt},
 	}
 	for _, c := range cases {
@@ -99,4 +99,30 @@ func FuzzDecode(f *testing.F) {
 			t.Fatalf("re-encode mismatch")
 		}
 	})
+}
+
+func TestCodecByteIsHeaderByte3(t *testing.T) {
+	// Byte 3 was "reserved 0" in the original format: raw payloads keep it zero, so old
+	// entries decode as Codec 0, and old readers reject compressed entries as corrupt.
+	if b := Encode(Entry{Value: []byte("v")}); b[3] != 0 {
+		t.Fatalf("raw entry byte3 = %d", b[3])
+	}
+	b := Encode(Entry{Value: []byte("v"), Codec: 0x42})
+	if b[3] != 0x42 {
+		t.Fatalf("byte3 = %#x", b[3])
+	}
+	e, err := Decode(b)
+	if err != nil || e.Codec != 0x42 {
+		t.Fatalf("got %+v %v", e, err)
+	}
+}
+
+func TestPutHeader(t *testing.T) {
+	want := Entry{Value: []byte("payload"), Flags: FlagTombstone, Codec: 3, ExpireAt: 5, StoredAt: 6, Delta: 7}
+	b := make([]byte, HeaderSize, HeaderSize+len(want.Value))
+	b = append(b, want.Value...)
+	PutHeader(b, want)
+	if !bytes.Equal(b, Encode(want)) {
+		t.Fatal("PutHeader differs from Encode")
+	}
 }
