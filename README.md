@@ -56,6 +56,8 @@ inv, err := cachexredis.New(cachexredis.Config{Client: rdb}) // optional: same R
 c, err := cachex.New(cachex.WithL2(store), cachex.WithInvalidator(inv))
 ```
 
+Runnable two-instance demo: `cd redis && REDIS_ADDR=localhost:6379 go run ./example`.
+
 The Redis store supports everything the memcached one does: `GetMulti` (one `MGET`),
 compare-and-swap for cross-process `Delete` safety, `Incr` for namespace versions, and the
 distributed load lock. Each value carries an 8-byte version header used as the CAS token, so
