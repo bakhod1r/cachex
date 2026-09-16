@@ -51,7 +51,27 @@ func topic(t *testing.T, bs []string) string {
 		_, _ = adm.DeleteTopics(ctx, name)
 		cl.Close()
 	})
+	// CreateTopic returns before every partition has a leader the brokers will admit to
+	// knowing, and Subscribe lists end offsets straight away: without this wait it can see
+	// UNKNOWN_TOPIC_OR_PARTITION.
+	waitLeaders(ctx, t, adm, name)
 	return name
+}
+
+// waitLeaders blocks until end offsets are listable for all 3 partitions of tp.
+func waitLeaders(ctx context.Context, t *testing.T, adm *kadm.Client, tp string) {
+	t.Helper()
+	for {
+		offs, err := adm.ListEndOffsets(ctx, tp)
+		if err == nil && offs.Error() == nil && len(offs.Offsets()[tp]) == 3 {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("topic %s has no leaders after 30s: %v", tp, err)
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 func newInv(t *testing.T, bs []string, tp string) *Invalidator {
