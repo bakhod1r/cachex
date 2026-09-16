@@ -51,9 +51,7 @@ func New(c Config) (*Invalidator, error) {
 		c.OnError = func(error) {}
 	}
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return nil, fmt.Errorf("cachexnats: origin id: %w", err)
-	}
+	_, _ = rand.Read(b[:]) // never fails since Go 1.24
 	return &Invalidator{conn: c.Conn, subject: c.Subject, onError: c.OnError, origin: hex.EncodeToString(b[:])}, nil
 }
 
@@ -86,10 +84,7 @@ func (i *Invalidator) Publish(ctx context.Context, msg cachex.Invalidation) erro
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	b, err := encode(msg, i.origin)
-	if err != nil {
-		return err
-	}
+	b, _ := encode(msg, i.origin) // marshalling strings cannot fail
 	if err := i.conn.Publish(i.subject, b); err != nil {
 		return fmt.Errorf("cachexnats: publish: %w", err)
 	}

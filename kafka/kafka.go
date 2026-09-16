@@ -47,6 +47,9 @@ type Invalidator struct {
 	opts    []kgo.Opt
 	origin  string
 
+	// listEnds lists partition end offsets; a field so tests can fake the broker's answer.
+	listEnds func(ctx context.Context, topics ...string) (kadm.ListedOffsets, error)
+
 	mu     sync.Mutex
 	closed bool
 	prod   *kgo.Client
@@ -75,9 +78,7 @@ func New(c Config) (*Invalidator, error) {
 		c.OnError = func(error) {}
 	}
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return nil, fmt.Errorf("cachexkafka: origin id: %w", err)
-	}
+	_, _ = rand.Read(b[:]) // never fails since Go 1.24
 	i := &Invalidator{
 		brokers: c.Brokers,
 		topic:   c.Topic,
@@ -91,6 +92,7 @@ func New(c Config) (*Invalidator, error) {
 		return nil, err
 	}
 	i.prod = prod
+	i.listEnds = kadm.NewClient(prod).ListEndOffsets
 	return i, nil
 }
 
@@ -132,10 +134,7 @@ func (i *Invalidator) Publish(ctx context.Context, msg cachex.Invalidation) erro
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	b, err := encode(msg, i.origin)
-	if err != nil {
-		return err
-	}
+	b, _ := encode(msg, i.origin) // marshalling strings cannot fail
 	rec := &kgo.Record{Topic: i.topic, Key: []byte(i.origin), Value: b}
 	if err := i.prod.ProduceSync(ctx, rec).FirstErr(); err != nil {
 		return fmt.Errorf("cachexkafka: publish: %w", err)
@@ -158,7 +157,7 @@ func (i *Invalidator) Subscribe(ctx context.Context, fn func(cachex.Invalidation
 	if fn == nil {
 		return errors.New("cachexkafka: nil fn")
 	}
-	ends, err := kadm.NewClient(i.prod).ListEndOffsets(ctx, i.topic)
+	ends, err := i.listEnds(ctx, i.topic)
 	if err == nil {
 		err = ends.Error()
 	}

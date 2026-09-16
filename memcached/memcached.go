@@ -54,9 +54,6 @@ func New(c Config) (*Store, error) {
 		return nil, errors.New("memcached: no servers configured")
 	}
 	cl := memcache.New(c.Servers...)
-	if cl == nil {
-		return nil, errors.New("memcached: invalid server list")
-	}
 	cl.Timeout = c.Timeout
 	if cl.Timeout <= 0 {
 		cl.Timeout = defaultTimeout
@@ -255,10 +252,7 @@ func expiration(ttl time.Duration) int32 {
 	}
 	secs := int64(ttl / time.Second)
 	if ttl%time.Second != 0 {
-		secs++
-	}
-	if secs > maxRelativeTTL {
-		secs = maxRelativeTTL
+		secs++ // ttl < maxRelativeTTL seconds, so rounding up never exceeds the cap
 	}
 	return int32(secs)
 }

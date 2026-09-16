@@ -33,13 +33,25 @@ type Config struct {
 
 // Invalidator publishes and receives cachex invalidations on a RabbitMQ fanout exchange.
 type Invalidator struct {
-	conn     *amqp.Connection
-	exchange string
-	onError  func(error)
-	origin   string
+	openChannel func() (channel, error) // conn.Channel; replaced by fakes in tests
+	exchange    string
+	onError     func(error)
+	origin      string
 
 	mu    sync.Mutex // guards pubCh; amqp channels are not goroutine-safe
-	pubCh *amqp.Channel
+	pubCh channel
+}
+
+// channel is the subset of *amqp.Channel the Invalidator uses.
+type channel interface {
+	ExchangeDeclare(name, kind string, durable, autoDelete, internal, noWait bool, args amqp.Table) error
+	QueueDeclare(name string, durable, autoDelete, exclusive, noWait bool, args amqp.Table) (amqp.Queue, error)
+	QueueBind(name, key, exchange string, noWait bool, args amqp.Table) error
+	Consume(queue, consumer string, autoAck, exclusive, noLocal, noWait bool, args amqp.Table) (<-chan amqp.Delivery, error)
+	NotifyClose(c chan *amqp.Error) chan *amqp.Error
+	PublishWithContext(ctx context.Context, exchange, key string, mandatory, immediate bool, msg amqp.Publishing) error
+	Cancel(consumer string, noWait bool) error
+	Close() error
 }
 
 var _ cachex.Invalidator = (*Invalidator)(nil)
@@ -56,10 +68,14 @@ func newInvalidator(c Config) (*Invalidator, error) {
 		c.OnError = func(error) {}
 	}
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return nil, fmt.Errorf("cachexrabbitmq: origin id: %w", err)
-	}
-	return &Invalidator{conn: c.Conn, exchange: c.Exchange, onError: c.OnError, origin: hex.EncodeToString(b[:])}, nil
+	_, _ = rand.Read(b[:]) // never fails since Go 1.24
+	conn := c.Conn
+	return &Invalidator{
+		openChannel: func() (channel, error) { return conn.Channel() },
+		exchange:    c.Exchange,
+		onError:     c.OnError,
+		origin:      hex.EncodeToString(b[:]),
+	}, nil
 }
 
 // New validates c, opens a publish channel and declares a durable fanout exchange. The returned
@@ -69,16 +85,24 @@ func New(c Config) (*Invalidator, error) {
 	if err != nil {
 		return nil, err
 	}
-	ch, err := i.conn.Channel()
+	if err := i.declare(); err != nil {
+		return nil, err
+	}
+	return i, nil
+}
+
+// declare opens the publish channel and declares the exchange.
+func (i *Invalidator) declare() error {
+	ch, err := i.openChannel()
 	if err != nil {
-		return nil, fmt.Errorf("cachexrabbitmq: open channel: %w", err)
+		return fmt.Errorf("cachexrabbitmq: open channel: %w", err)
 	}
 	if err := ch.ExchangeDeclare(i.exchange, amqp.ExchangeFanout, true, false, false, false, nil); err != nil {
 		_ = ch.Close()
-		return nil, fmt.Errorf("cachexrabbitmq: declare exchange: %w", err)
+		return fmt.Errorf("cachexrabbitmq: declare exchange: %w", err)
 	}
 	i.pubCh = ch
-	return i, nil
+	return nil
 }
 
 // Close closes the publish channel. Subscriptions are stopped by cancelling their contexts.
@@ -119,13 +143,10 @@ func (i *Invalidator) Publish(ctx context.Context, msg cachex.Invalidation) erro
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	b, err := encode(msg, i.origin)
-	if err != nil {
-		return err
-	}
+	b, _ := encode(msg, i.origin) // marshalling strings cannot fail
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	err = i.pubCh.PublishWithContext(ctx, i.exchange, "", false, false, amqp.Publishing{
+	err := i.pubCh.PublishWithContext(ctx, i.exchange, "", false, false, amqp.Publishing{
 		ContentType:  "application/json",
 		DeliveryMode: amqp.Transient,
 		Body:         b,
@@ -144,7 +165,7 @@ func (i *Invalidator) Subscribe(ctx context.Context, fn func(cachex.Invalidation
 	if fn == nil {
 		return errors.New("cachexrabbitmq: nil fn")
 	}
-	ch, err := i.conn.Channel()
+	ch, err := i.openChannel()
 	if err != nil {
 		return fmt.Errorf("cachexrabbitmq: open channel: %w", err)
 	}

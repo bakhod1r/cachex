@@ -50,9 +50,7 @@ func New(c Config) (*Invalidator, error) {
 		c.OnError = func(error) {}
 	}
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return nil, fmt.Errorf("cachexredis: origin id: %w", err)
-	}
+	_, _ = rand.Read(b[:]) // never fails since Go 1.24
 	return &Invalidator{client: c.Client, channel: c.Channel, onError: c.OnError, origin: hex.EncodeToString(b[:])}, nil
 }
 
@@ -80,10 +78,7 @@ func decode(payload, self string) (msg cachex.Invalidation, ok bool, err error) 
 
 // Publish PUBLISHes msg to the channel. Bound it with ctx; no retry is done here.
 func (i *Invalidator) Publish(ctx context.Context, msg cachex.Invalidation) error {
-	b, err := encode(msg, i.origin)
-	if err != nil {
-		return err
-	}
+	b, _ := encode(msg, i.origin) // marshalling strings cannot fail
 	if err := i.client.Publish(ctx, i.channel, b).Err(); err != nil {
 		return fmt.Errorf("cachexredis: publish: %w", err)
 	}
