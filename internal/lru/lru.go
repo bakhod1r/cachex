@@ -83,8 +83,8 @@ type entry struct {
 	first   item  // backing storage for the first item: a new key costs one allocation
 	size    int64 // guarded by shard.mu
 	visited atomic.Bool
-	// satEpoch is 1 + the sketch epoch at which Get saw this key's counters saturated
-	// (0 = not seen); while it matches, Get skips the sketch.
+	// satEpoch is 1 + the sketch epoch at which a drain saw this key's counters saturated
+	// (0 = not seen); while it matches, a read records nothing: the counters cannot rise.
 	satEpoch atomic.Uint64
 
 	prev, next *entry // intrusive list links; owned by the shard's entryList
@@ -104,11 +104,20 @@ type evicted struct {
 }
 
 type shard struct {
-	mu    sync.Mutex            // guards writes: table mutations, ll, bytes, entry.size
-	tab   atomic.Pointer[table] // nil = empty; see table.go
-	ll    entryList             // front = MRU
-	bytes int64
-	freq  *sketch.Sketch // nil unless Options.Frequency with a bound; lock-free
+	mu  sync.Mutex            // guards writes: table mutations, ll, bytes, entry.size
+	tab atomic.Pointer[table] // nil = empty; see table.go
+	// Eviction lists, front = MRU. With Frequency and MaxEntries the shard runs
+	// W-TinyLFU (see tinylfu.go): new keys land in win, survivors move to ll
+	// (probation) and reads promote them to prot (protected). Otherwise only ll is
+	// used, as one CLOCK list.
+	ll        entryList
+	win, prot entryList
+	winCap    int // 0 = no window: plain CLOCK
+	protCap   int
+	bytes     int64
+	freq      *sketch.Sketch       // nil unless Options.Frequency with a bound; lock-free
+	drainNext atomic.Uint32        // round-robin cursor for drainOne
+	reads     [readStripes]readBuf // lock-free read records, drained into freq; see readbuf.go
 
 	hits, misses, evictions, expirations counter.Counter
 }
@@ -170,6 +179,7 @@ func New(o Options) *Cache {
 		c.shards[i] = &shard{}
 		if o.Frequency && sketchCap > 0 {
 			c.shards[i].freq = sketch.New(max(sketchCap, minSketchCap))
+			c.shards[i].sizeSegments(c.maxEntries) // 0 maxEntries keeps plain CLOCK
 		}
 	}
 	return c
@@ -191,7 +201,7 @@ func (c *Cache) notify(evs []evicted) {
 
 // removeLocked unlinks el; caller holds s.mu.
 func (s *shard) removeLocked(el *entry) *entry {
-	e := s.ll.Remove(el)
+	e := el.list.Remove(el)
 	s.del(e)
 	s.bytes -= e.size
 	return e
@@ -203,6 +213,14 @@ func (c *Cache) Get(key string) ([]byte, bool) { return c.GetAt(key, c.now()) }
 
 // GetAt is Get with the caller's clock reading, saving a clock call on hot paths.
 func (c *Cache) GetAt(key string, now int64) ([]byte, bool) {
+	it, ok := c.getAt(key, now)
+	if !ok {
+		return nil, false
+	}
+	return it.val, true
+}
+
+func (c *Cache) getAt(key string, now int64) (*item, bool) {
 	s, h := c.shardFor(key)
 	e := s.lookup(key, h)
 	if s.freq != nil {
@@ -222,19 +240,16 @@ func (c *Cache) GetAt(key string, now int64) ([]byte, bool) {
 		e.visited.Store(true)
 	}
 	s.hits.Add(1)
-	return it.val, true
+	return it, true
 }
 
-// touch records a read of hash h (entry e, nil on a miss) in the sketch, skipping
-// the counter reads when e was already saturated in the current sketch epoch.
+// touch records a read of hash h (entry e, nil on a miss) in the shard's read buffer,
+// skipping it for an entry already saturated in the current sketch epoch.
 func (s *shard) touch(e *entry, h uint64) {
-	ep := s.freq.Epoch() + 1
-	if e != nil && e.satEpoch.Load() == ep {
+	if e != nil && e.satEpoch.Load() == s.freq.Epoch()+1 {
 		return
 	}
-	if s.freq.Increment(h) && e != nil {
-		e.satEpoch.Store(ep)
-	}
+	s.record(e, h)
 }
 
 // expire removes e if it is still the stored, expired entry for its key.
@@ -295,16 +310,17 @@ func (c *Cache) set(key string, val []byte, ttl time.Duration, owned bool) bool 
 		s.freq.Increment(h)
 	}
 	s.mu.Lock()
+	s.drainOne() // fold a slice of the buffered reads in, under the lock so reads promote
 	cur := s.lookup(key, h)
 	if cur != nil {
 		s.bytes += size - cur.size
 		cur.size = size
 		cur.item.Store(&item{val: cp, expiresAt: exp})
-		s.ll.MoveToFront(cur)
+		cur.list.MoveToFront(cur)
 	} else {
 		cur = &entry{key: key, hash: h, size: size, first: item{val: cp, expiresAt: exp}}
 		cur.item.Store(&cur.first)
-		s.ll.PushFront(cur)
+		s.admitList().PushFront(cur)
 		s.put(cur)
 		s.bytes += size
 	}
@@ -323,6 +339,9 @@ func (c *Cache) set(key string, val []byte, ttl time.Duration, owned bool) bool 
 // also moved to front, up to freqCandidates per eviction; then the least
 // frequent examined entry is evicted. cur, the entry just written, is never evicted.
 func (c *Cache) evictLocked(s *shard, cur *entry, h uint64, evs []evicted) []evicted {
+	if s.winCap > 0 {
+		return c.evictTinyLFU(s, cur, evs)
+	}
 	var (
 		examined  int
 		victim    *entry
@@ -332,8 +351,7 @@ func (c *Cache) evictLocked(s *shard, cur *entry, h uint64, evs []evicted) []evi
 	if s.freq != nil {
 		incomingF = s.freq.Estimate(h)
 	}
-	for s.ll.Len() > 1 &&
-		((c.maxEntries > 0 && s.ll.Len() > c.maxEntries) || (c.maxBytes > 0 && s.bytes > c.maxBytes)) {
+	for s.ll.Len() > 1 && c.over(s) {
 		back := s.ll.Back()
 		e := back
 		if back == cur || e.visited.Load() {
@@ -403,11 +421,17 @@ func (c *Cache) Len() int {
 	n := 0
 	for _, s := range c.shards {
 		s.mu.Lock()
-		n += s.ll.Len()
+		n += s.count()
 		s.mu.Unlock()
 	}
 	return n
 }
+
+// count is the number of stored entries in s; caller holds s.mu.
+func (s *shard) count() int { return s.ll.Len() + s.win.Len() + s.prot.Len() }
+
+// lists returns the eviction lists of s, MRU-first within each.
+func (s *shard) lists() [3]*entryList { return [3]*entryList{&s.win, &s.ll, &s.prot} }
 
 // Purge removes all entries. OnEvict is called with Removed for every removed
 // entry, after the shard lock is released. No counters are changed.
@@ -415,14 +439,18 @@ func (c *Cache) Purge() {
 	for _, s := range c.shards {
 		var evs []evicted
 		s.mu.Lock()
-		if c.onEvict != nil && s.ll.Len() > 0 {
-			evs = make([]evicted, 0, s.ll.Len())
-			for el := s.ll.Front(); el != nil; el = el.Next() {
-				evs = append(evs, evicted{el.key, Removed})
+		if c.onEvict != nil && s.count() > 0 {
+			evs = make([]evicted, 0, s.count())
+			for _, l := range s.lists() {
+				for el := l.Front(); el != nil; el = el.Next() {
+					evs = append(evs, evicted{el.key, Removed})
+				}
 			}
 		}
 		s.resetTable()
-		s.ll.Init()
+		for _, l := range s.lists() {
+			l.Init()
+		}
 		s.bytes = 0
 		s.mu.Unlock()
 		c.notify(evs)
@@ -437,9 +465,11 @@ func (c *Cache) LiveLen() int {
 	for _, s := range c.shards {
 		s.mu.Lock()
 		now := c.now()
-		for el := s.ll.Front(); el != nil; el = el.Next() {
-			if !el.item.Load().expired(now) {
-				n++
+		for _, l := range s.lists() {
+			for el := l.Front(); el != nil; el = el.Next() {
+				if !el.item.Load().expired(now) {
+					n++
+				}
 			}
 		}
 		s.mu.Unlock()
@@ -456,7 +486,7 @@ func (c *Cache) Stats() Stats {
 		st.Evictions += s.evictions.Load()
 		st.Expirations += s.expirations.Load()
 		s.mu.Lock()
-		st.Entries += s.ll.Len()
+		st.Entries += s.count()
 		st.Bytes += s.bytes
 		s.mu.Unlock()
 	}
@@ -474,13 +504,15 @@ func (c *Cache) Sweep(maxPerShard int) int {
 	for _, s := range c.shards {
 		var evs []evicted
 		s.mu.Lock()
-		for el := s.ll.Back(); el != nil && len(evs) < maxPerShard; {
-			prev := el.Prev()
-			if el.item.Load().expired(now) {
-				s.removeLocked(el)
-				evs = append(evs, evicted{el.key, Expired})
+		for _, l := range s.lists() {
+			for el := l.Back(); el != nil && len(evs) < maxPerShard; {
+				prev := el.Prev()
+				if el.item.Load().expired(now) {
+					s.removeLocked(el)
+					evs = append(evs, evicted{el.key, Expired})
+				}
+				el = prev
 			}
-			el = prev
 		}
 		s.mu.Unlock()
 		if n := len(evs); n > 0 {

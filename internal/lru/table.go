@@ -9,9 +9,14 @@ import (
 // atomic pointers, so lookup runs without the shard lock. Writers (put, del, resetTable,
 // and the resize inside put) must hold the shard lock; there is one writer at a time.
 //
+// Each slot has a tag next to it holding the entry's hash (0 = empty, 1 = tombstone,
+// otherwise hash|3). A probe compares tags, so it only dereferences an entry pointer when
+// the hash already matches: passing over an occupied slot costs no cache miss on the entry.
+//
 // Why readers are safe: a slot only ever moves nil -> entry, entry -> tombstone, or
 // tombstone -> entry, each as one atomic store, and an entry's key and hash never change
-// after it is published. A resize builds a new table and publishes it with one atomic
+// after it is published. The tag is stored before the slot on insert and after it on
+// delete, so a reader that sees a matching tag always sees the matching entry too. A resize builds a new table and publishes it with one atomic
 // store; a reader still probing the old table sees the entries as of that moment. A
 // lookup racing a write can therefore return the entry just before or just after the
 // write, never a torn or foreign one.
@@ -21,7 +26,16 @@ const minTableSlots = 16
 // tombstone marks a deleted slot so probes for later keys continue past it.
 var tombstone = &entry{}
 
+const (
+	tagEmpty     = 0
+	tagTombstone = 1
+)
+
+// tagFor maps a hash to its tag, keeping it clear of the empty and tombstone values.
+func tagFor(h uint64) uint64 { return h | 3 }
+
 type table struct {
+	tags  []atomic.Uint64 // parallel to slots; see the note above
 	slots []atomic.Pointer[entry]
 	mask  uint64
 	used  int // slots holding an entry or a tombstone
@@ -29,7 +43,11 @@ type table struct {
 }
 
 func newTable(n int) *table {
-	return &table{slots: make([]atomic.Pointer[entry], n), mask: uint64(n - 1)}
+	return &table{
+		tags:  make([]atomic.Uint64, n),
+		slots: make([]atomic.Pointer[entry], n),
+		mask:  uint64(n - 1),
+	}
 }
 
 // start maps a hash to its first probe slot. The low bits pick the shard, so use the high bits.
@@ -41,13 +59,15 @@ func (s *shard) lookup(key string, h uint64) *entry {
 	if t == nil {
 		return nil
 	}
+	tag := tagFor(h)
 	for i, n := t.start(h), uint64(0); n <= t.mask; i, n = (i+1)&t.mask, n+1 {
-		e := t.slots[i].Load()
-		if e == nil {
+		switch t.tags[i].Load() {
+		case tagEmpty:
 			return nil
-		}
-		if e != tombstone && e.hash == h && e.key == key {
-			return e
+		case tag:
+			if e := t.slots[i].Load(); e != nil && e != tombstone && e.hash == h && e.key == key {
+				return e
+			}
 		}
 	}
 	return nil
@@ -60,15 +80,17 @@ func (s *shard) put(e *entry) {
 		t = s.rehash(t)
 	}
 	for i := t.start(e.hash); ; i = (i + 1) & t.mask {
-		switch cur := t.slots[i].Load(); cur {
-		case nil:
+		switch t.tags[i].Load() {
+		case tagEmpty:
 			t.used++
-			fallthrough
-		case tombstone:
-			t.live++
-			t.slots[i].Store(e)
-			return
+		case tagTombstone:
+		default:
+			continue
 		}
+		t.live++
+		t.slots[i].Store(e)
+		t.tags[i].Store(tagFor(e.hash))
+		return
 	}
 }
 
@@ -85,6 +107,7 @@ func (s *shard) rehash(old *table) *table {
 				for j := t.start(e.hash); ; j = (j + 1) & t.mask {
 					if t.slots[j].Load() == nil {
 						t.slots[j].Store(e)
+						t.tags[j].Store(tagFor(e.hash))
 						break
 					}
 				}
@@ -107,6 +130,7 @@ func (s *shard) del(e *entry) {
 		case nil:
 			return
 		case e:
+			t.tags[i].Store(tagTombstone)
 			t.slots[i].Store(tombstone)
 			t.live--
 			return

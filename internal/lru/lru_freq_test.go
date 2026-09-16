@@ -65,29 +65,55 @@ func TestFrequencyReadAfterWriteUnderPressure(t *testing.T) {
 	}
 }
 
-func TestFrequencyEvictsLeastFrequentOfExamined(t *testing.T) {
-	r := &evictRec{}
-	c := New(Options{MaxEntries: 4, Shards: 1, Frequency: true, OnEvict: r.fn})
-	// Insert order a,b,c,d -> tail is a. Frequencies: a=6 b=2 c=6 d=6 (none visited after reset).
-	for _, k := range []string{"a", "b", "c", "d"} {
-		c.Set(k, []byte(k), 0)
-	}
-	for _, kv := range []struct {
-		k string
-		n int
-	}{{"a", 5}, {"b", 1}, {"c", 5}, {"d", 5}} {
-		for range kv.n {
-			c.Get(kv.k)
+// W-TinyLFU: the window tail is admitted into the main space only if the sketch rates it
+// above the main victim, so a flood of one-hit wonders cannot flush the working set.
+// Some hot keys are still lost — the sketch ages, and keys never read again decay with
+// it — so this compares policies rather than demanding perfection.
+func TestFrequencySurvivesOneHitFlood(t *testing.T) {
+	const hot = 100
+	kept := func(freq bool) int {
+		c := New(Options{MaxEntries: hot, Shards: 1, Frequency: freq})
+		for i := range hot {
+			k := "hot" + strconv.Itoa(i)
+			c.Set(k, []byte(k), 0)
+			for range 5 {
+				c.Get(k)
+			}
 		}
+		c.shards[0].drainReads()
+		for i := range 10 * hot {
+			c.Set("cold"+strconv.Itoa(i), []byte("c"), 0)
+		}
+		n := 0
+		for i := range hot {
+			if _, ok := c.Get("hot" + strconv.Itoa(i)); ok {
+				n++
+			}
+		}
+		return n
 	}
-	// Spend visited bits without evicting: clear them directly (white-box).
+	clock, tinylfu := kept(false), kept(true)
+	if tinylfu < 3*clock/2 || tinylfu < hot/2 {
+		t.Fatalf("W-TinyLFU kept %d of %d hot keys, CLOCK kept %d", tinylfu, hot, clock)
+	}
+}
+
+// A newcomer the sketch already rates highly (it was read before, then evicted) must be
+// admitted over a resident seen only once.
+func TestFrequencyAdmitsFrequentNewcomer(t *testing.T) {
+	c := New(Options{MaxEntries: 8, Shards: 1, Frequency: true})
 	s := c.shards[0]
-	for el := s.ll.Front(); el != nil; el = el.Next() {
-		el.visited.Store(false)
+	_, h := c.shardFor("comeback")
+	for range 20 { // history for a key that is not resident
+		s.freq.Increment(h)
 	}
-	c.Set("e", []byte("e"), 0)
-	if len(r.evs) != 1 || r.evs[0] != "b:0" {
-		t.Fatalf("evicted %v, want [b:0]", r.evs)
+	for i := range 8 {
+		c.Set("res"+strconv.Itoa(i), []byte("r"), 0) // residents seen once
+	}
+	c.Set("comeback", []byte("c"), 0)
+	c.Set("filler", []byte("f"), 0) // pushes comeback out of the window
+	if _, ok := c.Get("comeback"); !ok {
+		t.Fatal("frequent newcomer was not admitted")
 	}
 }
 
@@ -136,24 +162,35 @@ func TestFrequencyRaceStress(t *testing.T) {
 	}
 }
 
-// A saturated hot key skips sketch work on Get, but must count again once the sketch ages.
-func TestFrequencySaturatedSkipResumesAfterAging(t *testing.T) {
+// Reads are buffered; writes drain one stripe each, so a handful of writes is enough to
+// fold every buffered read into the sketch.
+func TestFrequencyReadsReachSketchOnWrites(t *testing.T) {
 	c := New(Options{MaxEntries: 64, Shards: 1, Frequency: true})
 	c.Set("hot", []byte("h"), 0)
-	for range 40 {
-		c.Get("hot")
-	}
 	s := c.shards[0]
 	_, h := c.shardFor("hot")
+	before := s.freq.Estimate(h)
+	for range 5 {
+		c.Get("hot")
+	}
+	for i := range readStripes { // each write drains one stripe, round-robin
+		c.Set("other"+strconv.Itoa(i), []byte("o"), 0)
+	}
+	if got := s.freq.Estimate(h); got < before+5 {
+		t.Fatalf("estimate %d after 5 reads, want at least %d", got, before+5)
+	}
+}
+
+// A full stripe drains itself, so a hot key reaches saturation without any write.
+func TestFrequencyBufferDrainsWhenFull(t *testing.T) {
+	c := New(Options{MaxEntries: 64, Shards: 1, Frequency: true})
+	c.Set("hot", []byte("h"), 0)
+	s := c.shards[0]
+	_, h := c.shardFor("hot")
+	for range readStripes * readBufSize * 20 {
+		c.Get("hot")
+	}
 	if got := s.freq.Estimate(h); got != 15 {
-		t.Fatalf("estimate %d, want saturated 15", got)
-	}
-	for i := 0; s.freq.Estimate(h) == 15; i++ { // drive aging with other keys' increments
-		c.Get("miss" + strconv.Itoa(i))
-	}
-	aged := s.freq.Estimate(h)
-	c.Get("hot")
-	if got := s.freq.Estimate(h); got != aged+1 {
-		t.Fatalf("estimate after aging+Get = %d, want %d", got, aged+1)
+		t.Fatalf("estimate %d after a flood of reads, want saturated 15", got)
 	}
 }
