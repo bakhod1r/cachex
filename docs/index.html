@@ -1,0 +1,771 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cachex — two-tier cache engine for Go</title>
+<meta name="description" content="Two-tier cache engine for Go: sharded in-process LRU (L1) in front of memcached or Redis (L2), with stampede protection, namespace invalidation, stats and a circuit breaker.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+<style>
+:root{
+  --bg:#fbfbfa; --bg-elev:#ffffff; --bg-code:#f4f4f2;
+  --fg:#16161a; --fg-dim:#5b5b66; --fg-faint:#8a8a96;
+  --line:#e3e3df; --line-soft:#eeeeea;
+  --accent:#0f7a6c; --accent-soft:#e3f2ef;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+  --sidebar:248px;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#0e1013; --bg-elev:#15181d; --bg-code:#15181d;
+    --fg:#e8e8ea; --fg-dim:#a0a3ad; --fg-faint:#6d707a;
+    --line:#252931; --line-soft:#1c2026;
+    --accent:#4fd1bd; --accent-soft:#12302c;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0e1013; --bg-elev:#15181d; --bg-code:#15181d;
+  --fg:#e8e8ea; --fg-dim:#a0a3ad; --fg-faint:#6d707a;
+  --line:#252931; --line-soft:#1c2026;
+  --accent:#4fd1bd; --accent-soft:#12302c;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:72px}
+body{
+  margin:0;background:var(--bg);color:var(--fg);
+  font:16px/1.65 var(--sans);
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+code{font-family:var(--mono);font-size:.875em}
+:not(pre)>code{
+  background:var(--bg-code);border:1px solid var(--line-soft);
+  border-radius:4px;padding:.1em .35em;color:var(--fg);
+}
+pre{
+  background:var(--bg-code);border:1px solid var(--line);
+  border-radius:8px;padding:16px 18px;overflow-x:auto;
+  font-family:var(--mono);font-size:13.5px;line-height:1.6;margin:14px 0;
+}
+pre code{background:none;border:0;padding:0;font-size:inherit}
+
+/* ---- top bar ---- */
+header.top{
+  position:sticky;top:0;z-index:50;
+  background:color-mix(in srgb,var(--bg) 88%,transparent);
+  backdrop-filter:saturate(180%) blur(12px);
+  border-bottom:1px solid var(--line);
+}
+.top-in{
+  max-width:1180px;margin:0 auto;padding:0 20px;
+  height:56px;display:flex;align-items:center;gap:16px;
+}
+.brand{display:flex;align-items:center;gap:9px;font-weight:650;letter-spacing:-.02em;color:var(--fg)}
+.brand:hover{text-decoration:none}
+.brand .mark{
+  width:22px;height:22px;border-radius:6px;background:var(--accent);
+  display:grid;place-items:center;color:var(--bg);font-size:13px;font-weight:800;
+}
+.ver{
+  font:600 11px/1 var(--mono);color:var(--accent);
+  background:var(--accent-soft);border-radius:999px;padding:4px 8px;
+}
+.top nav{margin-left:auto;display:flex;align-items:center;gap:4px}
+.top nav a{
+  color:var(--fg-dim);font-size:14px;padding:6px 10px;border-radius:6px;
+}
+.top nav a:hover{color:var(--fg);background:var(--bg-code);text-decoration:none}
+#themeBtn{
+  background:none;border:1px solid var(--line);color:var(--fg-dim);
+  width:32px;height:32px;border-radius:7px;cursor:pointer;font-size:14px;
+}
+#themeBtn:hover{color:var(--fg);border-color:var(--fg-faint)}
+#menuBtn{display:none;background:none;border:1px solid var(--line);color:var(--fg-dim);
+  height:32px;padding:0 10px;border-radius:7px;cursor:pointer;font-size:13px}
+
+/* ---- hero ---- */
+.hero{border-bottom:1px solid var(--line);background:var(--bg-elev)}
+.hero-in{max-width:1180px;margin:0 auto;padding:64px 20px 56px}
+.hero h1{
+  font-size:clamp(34px,6vw,52px);line-height:1.08;letter-spacing:-.035em;
+  margin:0 0 18px;font-weight:700;max-width:16ch;
+}
+.hero p.lede{font-size:clamp(16px,2.2vw,19px);color:var(--fg-dim);max-width:60ch;margin:0 0 28px}
+.hero .cta{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.btn{
+  display:inline-flex;align-items:center;gap:7px;
+  padding:10px 16px;border-radius:8px;font-size:14px;font-weight:550;
+  border:1px solid var(--line);color:var(--fg);
+}
+.btn:hover{text-decoration:none;border-color:var(--fg-faint)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#06100e}
+:root[data-theme="dark"] .btn.primary,
+:root:not([data-theme="light"]) .btn.primary{color:#06100e}
+.btn.primary:hover{filter:brightness(1.07);border-color:var(--accent)}
+.install{
+  margin-top:26px;display:inline-flex;align-items:center;gap:12px;
+  background:var(--bg-code);border:1px solid var(--line);border-radius:8px;
+  padding:10px 12px;font-family:var(--mono);font-size:13.5px;max-width:100%;
+}
+.install span{overflow-x:auto;white-space:nowrap}
+.install button{
+  background:none;border:0;color:var(--fg-faint);cursor:pointer;
+  font:inherit;font-size:12px;padding:2px 6px;border-radius:5px;flex:none;
+}
+.install button:hover{color:var(--accent);background:var(--accent-soft)}
+
+.tiers{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));
+  gap:14px;margin-top:44px;
+}
+.tier{border:1px solid var(--line);border-radius:10px;padding:16px 18px;background:var(--bg)}
+.tier h3{margin:0 0 6px;font-size:14px;letter-spacing:-.01em}
+.tier p{margin:0;font-size:13.5px;color:var(--fg-dim);line-height:1.55}
+.tier .k{font:600 11px/1 var(--mono);color:var(--accent);display:block;margin-bottom:9px}
+
+/* ---- layout ---- */
+.wrap{max-width:1180px;margin:0 auto;padding:0 20px;display:flex;gap:44px;align-items:flex-start}
+aside{
+  width:var(--sidebar);flex:none;position:sticky;top:56px;
+  max-height:calc(100vh - 56px);overflow-y:auto;padding:32px 0 60px;
+}
+aside h4{
+  font:650 11px/1 var(--sans);letter-spacing:.09em;text-transform:uppercase;
+  color:var(--fg-faint);margin:22px 0 9px;
+}
+aside h4:first-child{margin-top:0}
+aside a{
+  display:block;color:var(--fg-dim);font-size:13.5px;padding:4.5px 10px;
+  border-radius:6px;border-left:2px solid transparent;margin-left:-2px;
+}
+aside a:hover{color:var(--fg);background:var(--bg-code);text-decoration:none}
+aside a.active{color:var(--accent);border-left-color:var(--accent);background:var(--accent-soft)}
+
+main{flex:1;min-width:0;padding:32px 0 96px;max-width:780px}
+section{scroll-margin-top:72px;padding-bottom:12px}
+section+section{margin-top:46px;padding-top:10px}
+h2{font-size:26px;letter-spacing:-.025em;margin:0 0 4px;font-weight:660}
+h2 .anchor{color:var(--fg-faint);opacity:0;font-weight:400;margin-left:8px;font-size:.72em}
+h2:hover .anchor{opacity:1}
+h3{font-size:16px;letter-spacing:-.01em;margin:30px 0 6px;font-weight:620}
+section>p{color:var(--fg-dim);margin:12px 0}
+section>p strong,li strong{color:var(--fg);font-weight:620}
+ul{padding-left:20px;margin:12px 0;color:var(--fg-dim)}
+li{margin:7px 0}
+.sub{color:var(--fg-faint);font-size:14px;margin:0 0 18px}
+
+table{border-collapse:collapse;width:100%;font-size:13.5px;margin:16px 0;display:block;overflow-x:auto}
+th,td{border-bottom:1px solid var(--line-soft);padding:9px 12px;text-align:left;vertical-align:top}
+th{color:var(--fg-faint);font:650 11px/1.4 var(--sans);letter-spacing:.07em;text-transform:uppercase;white-space:nowrap}
+td{color:var(--fg-dim)}
+td:first-child{color:var(--fg);white-space:nowrap}
+tbody tr:hover{background:var(--bg-code)}
+
+.note{
+  border-left:3px solid var(--accent);background:var(--accent-soft);
+  border-radius:0 8px 8px 0;padding:12px 16px;margin:16px 0;font-size:14px;color:var(--fg-dim);
+}
+.note b{color:var(--fg)}
+
+footer{border-top:1px solid var(--line);background:var(--bg-elev)}
+.foot-in{
+  max-width:1180px;margin:0 auto;padding:28px 20px;
+  display:flex;flex-wrap:wrap;gap:14px;justify-content:space-between;
+  font-size:13.5px;color:var(--fg-faint);
+}
+.foot-in a{color:var(--fg-dim)}
+
+@media (max-width:900px){
+  .wrap{display:block}
+  aside{
+    position:fixed;inset:56px auto 0 0;width:260px;z-index:40;
+    background:var(--bg-elev);border-right:1px solid var(--line);
+    padding:22px 14px 60px;transform:translateX(-102%);transition:transform .18s ease;
+  }
+  aside.open{transform:none}
+  main{padding-top:26px;max-width:none}
+  #menuBtn{display:inline-block}
+  .top nav a.hide-sm{display:none}
+  .hero-in{padding:44px 20px 40px}
+}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="top-in">
+    <button id="menuBtn" aria-label="Toggle navigation">☰</button>
+    <a class="brand" href="#top"><span class="mark">c</span>cachex</a>
+    <span class="ver">v0.5.0</span>
+    <nav>
+      <a class="hide-sm" href="#quick-start">Docs</a>
+      <a class="hide-sm" href="#options">Options</a>
+      <a href="https://pkg.go.dev/github.com/bakhod1r/cachex">API</a>
+      <a href="https://github.com/bakhod1r/cachex">GitHub</a>
+      <button id="themeBtn" aria-label="Toggle theme">◐</button>
+    </nav>
+  </div>
+</header>
+
+<div class="hero" id="top">
+  <div class="hero-in">
+    <h1>Two-tier cache engine for Go.</h1>
+    <p class="lede">
+      A sharded in-process LRU (<b>L1</b>) in front of a shared memcached or Redis tier
+      (<b>L2</b>), with stampede protection, namespace invalidation, stats and a circuit
+      breaker that degrades to L1-only when L2 is sick.
+    </p>
+    <div class="cta">
+      <a class="btn primary" href="#quick-start">Get started</a>
+      <a class="btn" href="https://github.com/bakhod1r/cachex">GitHub</a>
+      <a class="btn" href="https://pkg.go.dev/github.com/bakhod1r/cachex">pkg.go.dev</a>
+    </div>
+    <div class="install">
+      <span id="installCmd">go get github.com/bakhod1r/cachex</span>
+      <button data-copy="#installCmd">copy</button>
+    </div>
+
+    <div class="tiers">
+      <div class="tier">
+        <span class="k">L1</span>
+        <h3>In-process, sharded</h3>
+        <p>W-TinyLFU eviction, zero-allocation <code>GetView</code> reads, entry and byte caps.</p>
+      </div>
+      <div class="tier">
+        <span class="k">L2</span>
+        <h3>memcached or Redis</h3>
+        <p>One round trip for batches, CAS-safe deletes, optional zstd compression.</p>
+      </div>
+      <div class="tier">
+        <span class="k">LOAD</span>
+        <h3>Stampede protection</h3>
+        <p>Single-flight, XFetch early refresh, stale windows, cross-process load lock.</p>
+      </div>
+      <div class="tier">
+        <span class="k">OPS</span>
+        <h3>Observable, degradable</h3>
+        <p>Stats, Prometheus, OpenTelemetry, slog, and a breaker that falls back to L1.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+<aside id="sidebar">
+  <h4>Getting started</h4>
+  <a href="#quick-start">Quick start</a>
+  <a href="#stores">Stores: memcached &amp; Redis</a>
+
+  <h4>Reading &amp; writing</h4>
+  <a href="#getorload">GetOrLoad &amp; stampede</a>
+  <a href="#zero-copy">Zero-copy reads</a>
+  <a href="#getmulti">Batch operations</a>
+  <a href="#typed">Typed values</a>
+  <a href="#namespaces">Namespaces</a>
+
+  <h4>Operating it</h4>
+  <a href="#stats">Stats &amp; Prometheus</a>
+  <a href="#events">Events &amp; logging</a>
+  <a href="#otel">OpenTelemetry</a>
+  <a href="#compression">Compression</a>
+  <a href="#breaker">Circuit breaker</a>
+  <a href="#consistency">Consistency</a>
+  <a href="#invalidation">Invalidation buses</a>
+
+  <h4>Reference</h4>
+  <a href="#options">Options</a>
+  <a href="#testing">Testing</a>
+</aside>
+
+<main>
+
+<section id="quick-start">
+  <h2>Quick start <a class="anchor" href="#quick-start">#</a></h2>
+  <p class="sub">Requires Go 1.25+.</p>
+
+  <pre><code>go get github.com/bakhod1r/cachex</code></pre>
+
+  <h3>L1-only</h3>
+<pre><code>c, err := cachex.New()
+if err != nil { return err }
+defer c.Close()
+
+_ = c.Set(ctx, "k", []byte("v"), time.Minute) // ttl &lt;= 0 uses WithDefaultTTL
+v, err := c.Get(ctx, "k")                     // errors.Is(err, cachex.ErrMiss) on miss
+_ = c.Delete(ctx, "k")</code></pre>
+
+  <p>
+    Reads go L1 → L2 (backfilling L1) → miss. <code>Set</code> writes L2 then L1.
+    <code>Delete</code> removes from both and returns L2 errors. With a <code>CASStore</code>
+    (memcached, memstore) <code>Delete</code> writes a short-lived marker to L2 instead of
+    removing the key; reads treat it as absent.
+  </p>
+</section>
+
+<section id="stores">
+  <h2>Stores <a class="anchor" href="#stores">#</a></h2>
+  <p class="sub">The shared L2 tier. Pick one; both implement the same contract.</p>
+
+  <h3>memcached</h3>
+<pre><code>import "github.com/bakhod1r/cachex/memcached"
+
+store, err := memcached.New(memcached.Config{
+    Servers:   []string{"localhost:11211"},
+    Timeout:   100 * time.Millisecond, // default
+    KeyPrefix: "app:",
+})
+if err != nil { return err }
+
+c, err := cachex.New(cachex.WithL2(store), cachex.WithL1TTL(5*time.Second))
+if err != nil { return err }
+defer c.Close() // also closes the store</code></pre>
+
+  <div class="note">
+    <b>Timeouts.</b> The memcached client has no context support. A context is checked only
+    before an operation starts; once it is on the wire it is bounded by
+    <code>Config.Timeout</code>, not by your deadline. Keep <code>Timeout</code> well below your
+    request budget, and set <code>MaxConcurrency</code> so a slow memcached fails fast with
+    <code>ErrL2Unavailable</code> instead of piling up goroutines.
+  </div>
+
+  <h3>Redis (6+, standalone or Cluster)</h3>
+<pre><code>import cachexredis "github.com/bakhod1r/cachex/redis"
+
+rdb := redis.NewClient(&amp;redis.Options{Addr: "localhost:6379"})
+store, err := cachexredis.NewStore(cachexredis.StoreConfig{Client: rdb, KeyPrefix: "app:"})
+if err != nil { return err }
+
+inv, err := cachexredis.New(cachexredis.Config{Client: rdb}) // optional: same Redis for invalidation
+c, err := cachex.New(cachex.WithL2(store), cachex.WithInvalidator(inv))</code></pre>
+
+  <p>
+    The Redis store supports everything the memcached one does: <code>GetMulti</code> (one
+    <code>MGET</code>), compare-and-swap for cross-process <code>Delete</code> safety,
+    <code>Incr</code> for namespace versions, and the distributed load lock. Each value carries
+    an 8-byte version header used as the CAS token, so don't write to the store's keys with
+    other clients. Unlike memcached, keys are binary-safe and used as-is, timeouts honor the
+    request <code>context</code>, and a Cluster client works because every operation touches one
+    key.
+  </p>
+  <p>
+    Runnable two-instance demo:
+    <code>cd redis &amp;&amp; REDIS_ADDR=localhost:6379 go run ./example</code>
+  </p>
+</section>
+
+<section id="getorload">
+  <h2>GetOrLoad &amp; stampede protection <a class="anchor" href="#getorload">#</a></h2>
+
+<pre><code>v, err := c.GetOrLoad(ctx, "user:42", time.Minute, func(ctx context.Context) ([]byte, error) {
+    return db.LoadUser(ctx, 42) // bounded by WithLoadTimeout
+})</code></pre>
+
+  <ul>
+    <li><strong>Single-flight</strong> — concurrent misses for one key run the loader once per
+      process (<code>Stats.LoadsShared</code> counts deduplicated callers).</li>
+    <li><strong>XFetch early refresh</strong> — near expiry, a hit may trigger a background
+      refresh with probability driven by loader duration and <code>WithBeta</code> (0 disables).
+      <code>Stats.EarlyRefreshes</code>.</li>
+    <li><strong>Stale window</strong> — with <code>WithStaleWindow(d)</code>, an entry expired
+      less than <code>d</code> ago is served while it refreshes in the background.
+      <code>Stats.StaleServed</code>.</li>
+    <li><strong>Stale-if-error</strong> — with <code>WithStaleIfError(d)</code>, a loader
+      failure within <code>d</code> of expiry is answered from the last good value instead of an
+      error, so a source outage degrades to stale data. <code>ErrNotFound</code> is an
+      authoritative answer and is never masked. <code>Stats.StaleOnError</code>.</li>
+    <li><strong>Distributed lock</strong> — with <code>WithDistributedLock(ttl, poll)</code>, a
+      loader runs once per key across <em>all</em> processes (memcached <code>add</code> lock).
+      Waiters poll until the value appears or <code>ttl</code> passes, then load themselves; any
+      L2 problem fails open. <code>Stats.LockWaits</code>.</li>
+    <li><strong>Negative caching</strong> — return <code>cachex.ErrNotFound</code> from the
+      loader and set <code>WithNegativeTTL(d)</code>; repeated lookups of absent records return
+      <code>ErrNotFound</code> without loading. <code>Stats.NegativeHits</code>.</li>
+    <li>Background refreshes are capped at 16 concurrent; other loader errors are returned,
+      never cached.</li>
+  </ul>
+
+  <h3>Loader panics and TTL jitter</h3>
+  <ul>
+    <li>A panicking loader returns <code>cachex.ErrLoaderPanic</code> (counted in
+      <code>Stats.LoadErrors</code>) instead of crashing the process; nothing is cached.</li>
+    <li><code>WithTTLJitter(f)</code> shortens each stored TTL by a random fraction in
+      <code>[0, f)</code> so keys written together don't expire together.</li>
+  </ul>
+</section>
+
+<section id="zero-copy">
+  <h2>Zero-copy reads <a class="anchor" href="#zero-copy">#</a></h2>
+<pre><code>err := c.GetView(ctx, "user:42", func(v []byte) error {
+    return json.Unmarshal(v, &amp;u) // v is valid only inside fn: don't modify or keep it
+})</code></pre>
+  <p>
+    <code>Get</code> returns a private copy (one allocation); <code>GetView</code> hands the
+    cached bytes to <code>fn</code> and doesn't allocate on an L1 hit. A concurrent
+    <code>Set</code> of the same key never changes a slice that <code>fn</code> is already
+    reading.
+  </p>
+</section>
+
+<section id="getmulti">
+  <h2>Batch operations <a class="anchor" href="#getmulti">#</a></h2>
+<pre><code>vals, err := c.GetMulti(ctx, []string{"a", "b", "c"}) // map holds only found keys</code></pre>
+  <p>
+    L1 answers first; remaining keys go to L2 in one round trip when the store implements
+    <code>cachex.MultiGetter</code> (memcached does). Keys starting with <code>cachex:</code>
+    are reserved.
+  </p>
+<pre><code>_ = c.SetMulti(ctx, map[string][]byte{"a": a, "b": b}, time.Minute) // invalid key writes nothing
+
+vals, err := c.GetOrLoadMulti(ctx, ids, time.Minute, func(ctx context.Context, missing []string) (map[string][]byte, error) {
+    return db.LoadUsers(ctx, missing) // one query for all misses; absent keys = not found
+})</code></pre>
+  <p>
+    <code>GetOrLoadMulti</code> has no single-flight across concurrent batches, stale window or
+    early refresh. With <code>WithNegativeTTL</code>, keys the loader omits are cached as absent.
+  </p>
+</section>
+
+<section id="typed">
+  <h2>Typed values <a class="anchor" href="#typed">#</a></h2>
+<pre><code>import "github.com/bakhod1r/cachex/typed"
+
+users := typed.New(c, typed.JSON[User]())
+u, err := users.GetOrLoad(ctx, "42", time.Minute, func(ctx context.Context) (User, error) {
+    return db.LoadUser(ctx, 42)
+})</code></pre>
+  <p>
+    Codecs: <code>typed.JSON[V]()</code>, <code>typed.String()</code>,
+    <code>typed.Bytes()</code>, or your own <code>typed.Codec[V]</code>. Backends:
+    <code>*cachex.Cache</code> or <code>*cachex.Namespace</code>. An undecodable cached value is
+    deleted and reloaded once by <code>GetOrLoad</code>; <code>Get</code> returns an error
+    wrapping <code>typed.ErrDecode</code>.
+  </p>
+</section>
+
+<section id="namespaces">
+  <h2>Namespaces <a class="anchor" href="#namespaces">#</a></h2>
+<pre><code>users, err := c.Namespace("users") // non-empty, &lt;=64 bytes, no ':'/space, not "cachex*"
+_ = users.Set(ctx, "42", data, 0)
+v, err := users.GetOrLoad(ctx, "42", time.Minute, load)
+
+err = users.Invalidate(ctx) // drops every key in "users" on all nodes</code></pre>
+  <p>
+    Keys are stored as <code>&lt;name&gt;:&lt;version&gt;:&lt;key&gt;</code>;
+    <code>Invalidate</code> atomically increments a version counter in L2
+    (<code>cachex:ns:&lt;name&gt;:v</code>) and frees this process's L1 copies immediately. If
+    the version is unknown (L2 down, never fetched), <code>Get</code> misses, <code>Set</code>
+    returns the error and <code>GetOrLoad</code> calls the loader without caching.
+  </p>
+  <p>
+    <code>GetView</code>, <code>GetMulti</code>, <code>SetMulti</code> and
+    <code>GetOrLoadMulti</code> work the same way inside a namespace; loaders and returned maps
+    always use your keys, not the internal
+    <code>&lt;name&gt;:&lt;version&gt;:&lt;key&gt;</code> form.
+  </p>
+</section>
+
+<section id="stats">
+  <h2>Stats &amp; Prometheus <a class="anchor" href="#stats">#</a></h2>
+<pre><code>s := c.Stats()
+fmt.Println(s.L1Hits, s.L2Hits, s.Loads, s.Entries, s.Breaker, s.HitRatio())</code></pre>
+  <p>
+    Fields: <code>L1Hits, L1Misses, L2Hits, L2Misses, L2Errors, L2Skipped, Loads, LoadErrors,
+    LoadsShared, StaleServed, EarlyRefreshes, DecodeErrors, NegativeHits, LockWaits,
+    PublishErrors, Evictions, Expirations, Entries, Bytes, Breaker</code>
+    (<code>"closed"</code>, <code>"open"</code>, <code>"half-open"</code>). Counters are read
+    independently; a snapshot is not atomic across fields. <code>HitRatio()</code> is
+    <code>(L1Hits+L2Hits) / (L1Hits+L1Misses)</code>: every lookup touches L1 once, so L1 hits
+    plus misses is the total lookup count.
+  </p>
+
+  <h3>Prometheus</h3>
+  <p>A separate module keeps the core free of Prometheus dependencies:</p>
+<pre><code>import cachexprom "github.com/bakhod1r/cachex/prometheus"
+
+prometheus.MustRegister(cachexprom.NewCollector(c, cachexprom.WithNamespace("myapp_cache")))</code></pre>
+  <p>
+    Metrics are read from <code>Stats()</code> once per scrape
+    (<code>*_hits_total{tier}</code>, <code>*_misses_total{tier}</code>,
+    <code>*_l2_errors_total</code>, <code>*_loads_total</code>, <code>*_entries</code>,
+    <code>*_breaker_state{state}</code>, …).
+  </p>
+</section>
+
+<section id="events">
+  <h2>Events &amp; logging <a class="anchor" href="#events">#</a></h2>
+  <p>
+    <code>WithEvents</code> installs hooks for logging, metrics and tracing. Nil fields are
+    skipped, so an unset hook costs nothing.
+  </p>
+<pre><code>c, _ := cachex.New(
+	cachex.WithL2(store),
+	cachex.WithEvents(cachex.MergeEvents(
+		cachex.SlogEvents(slog.Default()),
+		cachex.Events{
+			OpStart: func(ctx context.Context, op cachex.Op, key string) context.Context {
+				ctx, _ = tracer.Start(ctx, "cache."+op.String()) // ctx reaches L2 calls and the loader
+				return ctx
+			},
+			OpEnd: func(ctx context.Context, info cachex.OpInfo, d time.Duration) {
+				trace.SpanFromContext(ctx).End() // info.Tier: l1, l2, stale, miss, loaded, negative
+			},
+		},
+	)),
+)</code></pre>
+  <ul>
+    <li><code>OpStart</code>/<code>OpEnd</code> — every public operation;
+      <code>OpInfo.Tier</code> says who answered.</li>
+    <li><code>LoadEnd</code> — each single-key loader call, including background refreshes.</li>
+    <li><code>L2Error</code>, <code>BreakerChange</code>, <code>LoaderPanic</code>,
+      <code>PublishError</code> — rare, actionable failures.</li>
+    <li><code>SlogEvents(l)</code> logs only the failure hooks (L2/publish errors and breaker
+      opening at Warn, other breaker transitions at Info, loader panics at Error), never per
+      operation.</li>
+  </ul>
+  <div class="note"><b>Hooks run synchronously</b> and must not call back into the Cache.</div>
+</section>
+
+<section id="otel">
+  <h2>OpenTelemetry <a class="anchor" href="#otel">#</a></h2>
+  <p>
+    <code>github.com/bakhod1r/cachex/otel</code> (separate module) turns <code>Events</code>
+    into spans and metrics.
+  </p>
+<pre><code>ev, err := cachexotel.Events() // global TracerProvider/MeterProvider by default
+c, _ := cachex.New(cachex.WithL2(store), cachex.WithEvents(cachex.MergeEvents(ev, cachex.SlogEvents(l))))</code></pre>
+  <ul>
+    <li>Span <code>cachex.&lt;op&gt;</code> per operation with <code>cachex.tier</code> and
+      <code>cachex.keys</code> (batches). <code>ErrMiss</code> and <code>ErrNotFound</code> are
+      not errors. Loader calls add a <code>cachex.load</code> span event.</li>
+    <li>Histograms <code>cachex.op.duration</code> (<code>op</code>, <code>tier</code>,
+      <code>error</code>) and <code>cachex.load.duration</code> (<code>error</code>), in
+      seconds.</li>
+    <li>Counters <code>cachex.l2.errors</code> (<code>op</code>),
+      <code>cachex.breaker.transitions</code> (<code>from</code>, <code>to</code>),
+      <code>cachex.loader.panics</code>, <code>cachex.publish.errors</code>.</li>
+    <li>Keys are never recorded unless <code>WithKeyAttribute(true)</code> (span attribute only;
+      PII and cardinality).</li>
+  </ul>
+</section>
+
+<section id="compression">
+  <h2>Compression <a class="anchor" href="#compression">#</a></h2>
+  <p>
+    L2 values can be compressed; L1 always keeps the uncompressed value, so L1 reads and
+    <code>GetView</code> cost nothing extra. The codec lives in a separate module:
+  </p>
+<pre><code>z, err := cachexzstd.New() // github.com/bakhod1r/cachex/zstd
+c, _ := cachex.New(cachex.WithL2(store), cachex.WithCompression(z, 512))</code></pre>
+  <ul>
+    <li>Values of at least <code>minSize</code> bytes written by <code>Set</code>,
+      <code>SetMulti</code>, <code>GetOrLoad</code> and <code>GetOrLoadMulti</code> are
+      compressed; a value is stored raw if compression fails or doesn't make it smaller. Delete
+      markers, cached <code>ErrNotFound</code>, load locks and namespace version counters are
+      never compressed.</li>
+    <li>Wire format: header byte 3 (formerly reserved, always 0) holds the codec id; 0 means
+      raw. Entries written by older versions decode unchanged. <code>payloadLen</code> is the
+      stored (compressed) length.</li>
+    <li><code>WithDecompressors(codecs...)</code> reads compressed entries without compressing
+      writes.</li>
+    <li>An entry a node can't decode (unknown codec id, corrupt data) is a miss, counted in
+      <code>Stats.DecodeErrors</code>; a loader then overwrites it. Older versions of cachex
+      also see compressed entries as corrupt, i.e. a miss.</li>
+    <li>Custom codecs implement <code>cachex.Compressor</code> with a stable, non-zero
+      <code>ID()</code> (<code>cachexzstd.ID</code> is 1) and must bound decompressed size
+      themselves (<code>cachexzstd.WithMaxDecodedSize</code>, default 256 MiB).</li>
+  </ul>
+  <div class="note">
+    <b>Rolling deploy order.</b> 1. Deploy a version where every node can decode the codec
+    (<code>WithDecompressors(z)</code>), with compression still off. 2. Once no old node
+    remains, enable <code>WithCompression(z, minSize)</code>. Rolling back reverses the order:
+    disable <code>WithCompression</code> first, keep the decoder until compressed entries have
+    expired.
+  </div>
+</section>
+
+<section id="breaker">
+  <h2>Degradation: the circuit breaker <a class="anchor" href="#breaker">#</a></h2>
+  <p>
+    All L2 calls go through a breaker (10s window, min 20 requests, opens at 50% failures, 5s
+    cooldown doubling on failed probe). Misses and semantic errors are not failures.
+  </p>
+  <ul>
+    <li>Breaker open: L2 calls are skipped (<code>Stats.L2Skipped</code>), <code>Get</code>
+      falls back to L1/miss.</li>
+    <li><code>Set</code> never fails because of L2; on L2 write failure L1 keeps the value only
+      for <code>WithDegradedL1TTL</code> and <code>Stats.L2Errors</code> grows.</li>
+    <li><code>Delete</code> and <code>Namespace.Invalidate</code> return L2 errors
+      (<code>cachex.ErrL2Unavailable</code> when open), because a value left in L2 would be
+      served to every node.</li>
+  </ul>
+</section>
+
+<section id="consistency">
+  <h2>Consistency <a class="anchor" href="#consistency">#</a></h2>
+  <p>L2 is the shared source of truth; L1 is per process.</p>
+  <ul>
+    <li>After a <code>Delete</code>/<code>Set</code> on one node, other nodes may serve their L1
+      copy for at most <strong><code>WithL1TTL</code></strong> (default 10s).</li>
+    <li>After <code>Namespace.Invalidate</code>, other nodes see the new version within
+      <strong><code>WithVersionTTL</code></strong> (default 2s). Old L1 entries need not expire
+      first: the version is part of the key, so they simply become unreachable.</li>
+    <li>With <code>WithInvalidator(inv)</code> both bounds become "as fast as your message bus":
+      <code>Delete</code> and <code>Invalidate</code> are broadcast and every subscribed process
+      drops its L1 copies immediately. Delivery is best effort; the TTL bounds still hold.</li>
+    <li><strong>Loads never undo a <code>Delete</code>/<code>Set</code>.</strong> A
+      <code>GetOrLoad</code> whose loader read the source before a <code>Delete</code> or
+      <code>Set</code> does not write its value back. Within one process this always holds.
+      Across processes it needs a store implementing <code>cachex.CASStore</code> (memcached and
+      memstore do): the load publishes with <code>add</code>/<code>cas</code> against the L2
+      state it saw before calling the loader, and <code>Delete</code> leaves a marker for
+      <code>WithDeleteMarkerTTL</code> (default 2 × load timeout). A loader that ignores its
+      context and outlives the marker TTL is not covered. <code>GetOrLoadMulti</code> has the
+      per-process guard only. Without <code>CASStore</code>, a load on node A may re-cache a
+      value that node B deleted, until its TTL.</li>
+  </ul>
+</section>
+
+<section id="invalidation">
+  <h2>Invalidation buses <a class="anchor" href="#invalidation">#</a></h2>
+  <p>
+    Each broker is a separate module with the same wire format and origin filtering.
+    <code>memstore.NewBus()</code> is an in-process implementation for tests.
+  </p>
+  <table>
+    <thead><tr><th>Module</th><th>Transport</th><th>Delivery</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><code>cachex/redis</code></td><td>Redis pub/sub</td><td>at-most-once</td><td>go-redis reconnects; messages during a disconnect are lost</td></tr>
+      <tr><td><code>cachex/nats</code></td><td>core NATS</td><td>at-most-once</td><td>not JetStream</td></tr>
+      <tr><td><code>cachex/kafka</code></td><td>Kafka topic, no consumer group</td><td>at-least-once while subscribed</td><td>topic must exist before <code>Subscribe</code>; each subscriber starts at the current end offsets</td></tr>
+      <tr><td><code>cachex/rabbitmq</code></td><td>fanout exchange, exclusive queue per subscriber</td><td>at-most-once</td><td>amqp091 doesn't reconnect; drops are reported via <code>OnError</code></td></tr>
+    </tbody>
+  </table>
+<pre><code>import cachexkafka "github.com/bakhod1r/cachex/kafka"
+
+inv, err := cachexkafka.New(cachexkafka.Config{Brokers: []string{"localhost:9092"}})
+defer inv.Close()
+
+import cachexrabbitmq "github.com/bakhod1r/cachex/rabbitmq"
+
+conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
+inv, err := cachexrabbitmq.New(cachexrabbitmq.Config{Conn: conn})</code></pre>
+  <p>
+    In every case a lost message only delays invalidation: the <code>WithL1TTL</code> and
+    <code>WithVersionTTL</code> bounds still apply.
+  </p>
+</section>
+
+<section id="options">
+  <h2>Options <a class="anchor" href="#options">#</a></h2>
+  <table>
+    <thead><tr><th>Option</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>WithL2(Store)</code></td><td>none (L1-only)</td><td>Shared tier, e.g. <code>memcached.New</code></td></tr>
+      <tr><td><code>WithL1MaxEntries(int)</code></td><td><code>100000</code></td><td>L1 entry cap (0 = unlimited)</td></tr>
+      <tr><td><code>WithL1MaxBytes(int64)</code></td><td><code>0</code> (unlimited)</td><td>L1 approximate byte cap</td></tr>
+      <tr><td><code>WithShards(int)</code></td><td><code>0</code> (auto)</td><td>L1 shard count</td></tr>
+      <tr><td><code>WithL1Frequency(bool)</code></td><td><code>true</code></td><td>Frequency-aware L1 eviction (count-min sketch)</td></tr>
+      <tr><td><code>WithDefaultTTL(d)</code></td><td><code>5m</code></td><td>TTL when <code>ttl &lt;= 0</code></td></tr>
+      <tr><td><code>WithL1TTL(d)</code></td><td><code>10s</code></td><td>Max L1 lifetime; cross-node staleness bound</td></tr>
+      <tr><td><code>WithDegradedL1TTL(d)</code></td><td><code>1s</code></td><td>L1 TTL after a failed L2 write</td></tr>
+      <tr><td><code>WithStaleWindow(d)</code></td><td><code>0</code> (off)</td><td>Serve expired values while refreshing</td></tr>
+      <tr><td><code>WithStaleIfError(d)</code></td><td><code>0</code> (off)</td><td>Serve the last good value when the loader fails</td></tr>
+      <tr><td><code>WithBeta(float64)</code></td><td><code>1.0</code></td><td>XFetch strength (0 disables)</td></tr>
+      <tr><td><code>WithLoadTimeout(d)</code></td><td><code>5s</code></td><td>Per-loader timeout</td></tr>
+      <tr><td><code>WithVersionTTL(d)</code></td><td><code>2s</code></td><td>Namespace version cache; invalidation visibility bound</td></tr>
+      <tr><td><code>WithSweepInterval(d)</code></td><td><code>1s</code></td><td>Expired-entry janitor (0 = lazy expiry only)</td></tr>
+      <tr><td><code>WithNegativeTTL(d)</code></td><td><code>0</code> (off)</td><td>Cache a loader's <code>ErrNotFound</code></td></tr>
+      <tr><td><code>WithDeleteMarkerTTL(d)</code></td><td><code>2 × load timeout</code></td><td>L2 Delete marker lifetime (<code>CASStore</code> only); must exceed load timeout</td></tr>
+      <tr><td><code>WithDistributedLock(ttl, poll)</code></td><td>off</td><td>One loader per key across processes</td></tr>
+      <tr><td><code>WithInvalidator(Invalidator)</code></td><td>none</td><td>Broadcast invalidations between processes</td></tr>
+      <tr><td><code>WithCompression(Compressor, minSize)</code></td><td>off</td><td>Compress L2 values <code>&gt;= minSize</code> bytes</td></tr>
+      <tr><td><code>WithDecompressors(Compressor...)</code></td><td>none</td><td>Decode compressed L2 entries without compressing</td></tr>
+      <tr><td><code>WithClock(Clock)</code></td><td>wall clock</td><td>Injectable clock for tests</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="testing">
+  <h2>Testing <a class="anchor" href="#testing">#</a></h2>
+<pre><code>go test -race ./...</code></pre>
+  <p>Integration against a real memcached:</p>
+<pre><code>docker run -d --rm -p 11211:11211 memcached:1.6-alpine
+MEMCACHED_ADDR=localhost:11211 go test -race -tags=integration ./memcached/</code></pre>
+  <p>
+    Other modules: <code>cd prometheus &amp;&amp; go test -race ./...</code>; Redis adapter:
+    <code>REDIS_ADDR=localhost:6379 go test -race -tags=integration ./...</code> inside
+    <code>redis/</code>; benchmarks against other Go caches live in <code>bench/</code> (see
+    <code>bench/RESULTS.md</code>).
+  </p>
+  <p>
+    Custom <code>Store</code> implementations can run the conformance suite:
+    <code>storetest.Run(t, newStore, advance)</code>. Implement <code>cachex.CASStore</code> too
+    (the suite then checks it) to get the cross-process Delete guarantee.
+  </p>
+</section>
+
+</main>
+</div>
+
+<footer>
+  <div class="foot-in">
+    <span>cachex — MIT licensed.</span>
+    <span>
+      <a href="https://github.com/bakhod1r/cachex">Source</a> ·
+      <a href="https://pkg.go.dev/github.com/bakhod1r/cachex">pkg.go.dev</a> ·
+      <a href="https://github.com/bakhod1r/cachex/issues">Issues</a>
+    </span>
+  </div>
+</footer>
+
+<script>
+// theme toggle
+(function () {
+  var root = document.documentElement, btn = document.getElementById('themeBtn');
+  try { var s = localStorage.getItem('cachex-theme'); if (s) root.setAttribute('data-theme', s); } catch (e) {}
+  btn.addEventListener('click', function () {
+    var dark = root.getAttribute('data-theme') === 'dark' ||
+      (!root.getAttribute('data-theme') && matchMedia('(prefers-color-scheme: dark)').matches);
+    var next = dark ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('cachex-theme', next); } catch (e) {}
+  });
+})();
+
+// copy button
+document.querySelectorAll('[data-copy]').forEach(function (b) {
+  b.addEventListener('click', function () {
+    var t = document.querySelector(b.dataset.copy).textContent;
+    navigator.clipboard.writeText(t).then(function () {
+      var old = b.textContent; b.textContent = 'copied';
+      setTimeout(function () { b.textContent = old; }, 1200);
+    });
+  });
+});
+
+// mobile sidebar
+(function () {
+  var side = document.getElementById('sidebar'), mb = document.getElementById('menuBtn');
+  mb.addEventListener('click', function () { side.classList.toggle('open'); });
+  side.addEventListener('click', function (e) { if (e.target.tagName === 'A') side.classList.remove('open'); });
+})();
+
+// scrollspy
+(function () {
+  var links = [].slice.call(document.querySelectorAll('#sidebar a[href^="#"]'));
+  var map = {};
+  links.forEach(function (a) { map[a.getAttribute('href').slice(1)] = a; });
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (en) {
+      if (!en.isIntersecting) return;
+      links.forEach(function (a) { a.classList.remove('active'); });
+      var a = map[en.target.id]; if (a) a.classList.add('active');
+    });
+  }, { rootMargin: '-72px 0px -70% 0px', threshold: 0 });
+  document.querySelectorAll('main section[id]').forEach(function (s) { obs.observe(s); });
+})();
+</script>
+</body>
+</html>

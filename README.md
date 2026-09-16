@@ -4,6 +4,8 @@ Two-tier cache engine for Go: a sharded in-process LRU (**L1**) in front of a sh
 memcached tier (**L2**), with stampede protection, namespace invalidation, stats and a
 circuit breaker that degrades to L1-only when L2 is sick.
 
+Docs: <https://bakhod1r.github.io/cachex/> · API: <https://pkg.go.dev/github.com/bakhod1r/cachex>
+
 ## Install
 
 ```sh

@@ -21,3 +21,6 @@ go.work.sum
 .idea/
 .vscode/
 .DS_Store
+
+# Bench scratch output
+/bench/speed.txt
