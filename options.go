@@ -15,6 +15,7 @@ type config struct {
 	l1TTL         time.Duration
 	degradedL1TTL time.Duration
 	staleWindow   time.Duration
+	staleIfError  time.Duration
 	beta          float64
 	loadTimeout   time.Duration
 	versionTTL    time.Duration
@@ -126,6 +127,24 @@ func WithStaleWindow(d time.Duration) Option {
 			return fmt.Errorf("cachex: negative stale window")
 		}
 		c.staleWindow = d
+		return nil
+	}
+}
+
+// grace is how long past expiry a value may be kept for stale serving.
+func (c *config) grace() time.Duration { return max(c.staleWindow, c.staleIfError) }
+
+// WithStaleIfError lets GetOrLoad answer with the last good value for d past its expiry
+// when the loader fails, so a source outage degrades to stale data instead of errors.
+// It covers transport and server failures, not ErrNotFound, which is an authoritative
+// answer from the source. The stale answer reports TierStale and counts StaleOnError.
+// Default 0 (off): loader errors reach the caller.
+func WithStaleIfError(d time.Duration) Option {
+	return func(c *config) error {
+		if d < 0 {
+			return fmt.Errorf("cachex: negative stale-if-error window")
+		}
+		c.staleIfError = d
 		return nil
 	}
 }

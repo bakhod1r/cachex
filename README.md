@@ -88,6 +88,9 @@ v, err := c.GetOrLoad(ctx, "user:42", time.Minute, func(ctx context.Context) ([]
   probability driven by loader duration and `WithBeta` (0 disables). `Stats.EarlyRefreshes`.
 - **Stale window**: with `WithStaleWindow(d)`, an entry expired less than `d` ago is served
   while it refreshes in the background. `Stats.StaleServed`.
+- **Stale-if-error**: with `WithStaleIfError(d)`, a loader failure within `d` of expiry is
+  answered from the last good value instead of an error, so a source outage degrades to stale
+  data. `ErrNotFound` is an authoritative answer and is never masked. `Stats.StaleOnError`.
 - **Distributed lock**: with `WithDistributedLock(ttl, poll)`, a loader runs once per key
   across *all* processes (memcached `add` lock). Waiters poll until the value appears or
   `ttl` passes, then load themselves; any L2 problem fails open. `Stats.LockWaits`.
@@ -350,6 +353,7 @@ bounds still apply.
 | `WithL1TTL(d)` | `10s` | Max L1 lifetime; cross-node staleness bound |
 | `WithDegradedL1TTL(d)` | `1s` | L1 TTL after a failed L2 write |
 | `WithStaleWindow(d)` | `0` (off) | Serve expired values while refreshing |
+| `WithStaleIfError(d)` | `0` (off) | Serve the last good value when the loader fails |
 | `WithBeta(float64)` | `1.0` | XFetch strength (0 disables) |
 | `WithLoadTimeout(d)` | `5s` | Per-loader timeout |
 | `WithVersionTTL(d)` | `2s` | Namespace version cache; invalidation visibility bound |

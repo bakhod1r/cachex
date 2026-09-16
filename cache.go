@@ -488,6 +488,7 @@ func (c *Cache) getOrLoad(ctx context.Context, key string, ttl time.Duration, lo
 	}
 	ttl = c.ttl(ttl)
 	now := c.nowNs()
+	var stale []byte // last good value, served if the loader fails (WithStaleIfError)
 	if e, tier, ok := c.lookup(ctx, key); ok {
 		switch {
 		case e.Flags&envelope.FlagTombstone != 0:
@@ -505,6 +506,8 @@ func (c *Cache) getOrLoad(ctx context.Context, key string, ttl time.Duration, lo
 			c.st.staleServed.Add(1)
 			c.refreshAsync(key, ttl, load)
 			return clone(e.Value), TierStale, nil
+		case c.cfg.staleIfError > 0 && now < e.ExpireAt+int64(c.cfg.staleIfError):
+			stale = e.Value // used only if the load below fails
 		}
 	}
 	// fn runs on the flight's goroutine and may outlive this call (ctx cancel), hence atomic.
@@ -531,6 +534,10 @@ func (c *Cache) getOrLoad(ctx context.Context, key string, ttl time.Duration, lo
 	}
 	tier := Tier(answered.Load())
 	if err != nil {
+		if stale != nil && !errors.Is(err, ErrNotFound) {
+			c.st.staleOnError.Add(1)
+			return clone(stale), TierStale, nil
+		}
 		return nil, tier, err
 	}
 	return clone(v), tier, nil
@@ -718,7 +725,7 @@ func (c *Cache) backfill(key string, e envelope.Entry, raw []byte, owned bool, n
 func (c *Cache) l1Hold(e envelope.Entry, now int64) time.Duration {
 	hold := c.cfg.l1TTL
 	if e.ExpireAt != 0 {
-		left := time.Duration(e.ExpireAt-now) + c.cfg.staleWindow
+		left := time.Duration(e.ExpireAt-now) + c.cfg.grace()
 		hold = min(hold, left)
 	}
 	return hold
@@ -799,7 +806,7 @@ func (c *Cache) commit(ctx context.Context, key string, e envelope.Entry, ttl ti
 	e.ExpireAt = now + int64(ttl)
 	raw := envelope.Encode(e)
 	l2raw := c.compressL2(e, raw) // L1 keeps raw: reads never decompress
-	l2ttl := ttl + c.cfg.staleWindow
+	l2ttl := ttl + c.cfg.grace()
 	hold := c.cfg.l1TTL
 	if c.l2 != nil {
 		name := "set"

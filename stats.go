@@ -8,6 +8,7 @@ type counters struct {
 	l1Corrupt, l2Hits, l2Misses, l2Errors, l2Skipped counter.Counter
 	loads, loadErrors, loadsShared                   counter.Counter
 	staleServed, earlyRefreshes, decodeErrors        counter.Counter
+	staleOnError                                     counter.Counter
 	negativeHits, lockWaits, publishErrors           counter.Counter
 	loadsDiscarded                                   counter.Counter
 }
@@ -22,6 +23,7 @@ type Stats struct {
 	Loads, LoadErrors      uint64
 	LoadsShared            uint64 // callers deduplicated by single-flight
 	StaleServed            uint64
+	StaleOnError           uint64 // stale answers served because the loader failed
 	EarlyRefreshes         uint64
 	DecodeErrors           uint64
 	NegativeHits           uint64 // cached ErrNotFound answers
@@ -53,7 +55,7 @@ func (c *Cache) Stats() Stats {
 		L2Hits: c.st.l2Hits.Load(), L2Misses: c.st.l2Misses.Load(),
 		L2Errors: c.st.l2Errors.Load(), L2Skipped: c.st.l2Skipped.Load(),
 		Loads: c.st.loads.Load(), LoadErrors: c.st.loadErrors.Load(), LoadsShared: c.st.loadsShared.Load(),
-		StaleServed: c.st.staleServed.Load(), EarlyRefreshes: c.st.earlyRefreshes.Load(),
+		StaleServed: c.st.staleServed.Load(), StaleOnError: c.st.staleOnError.Load(), EarlyRefreshes: c.st.earlyRefreshes.Load(),
 		DecodeErrors: c.st.decodeErrors.Load(), NegativeHits: c.st.negativeHits.Load(),
 		LockWaits: c.st.lockWaits.Load(), PublishErrors: c.st.publishErrors.Load(),
 		LoadsDiscarded: c.st.loadsDiscarded.Load(),

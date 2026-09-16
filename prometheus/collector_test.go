@@ -21,7 +21,7 @@ func sample() cachex.Stats {
 	return cachex.Stats{
 		L1Hits: 1, L1Misses: 2, L2Hits: 3, L2Misses: 4, L2Errors: 5, L2Skipped: 6,
 		Loads: 7, LoadErrors: 8, LoadsShared: 9, StaleServed: 10, EarlyRefreshes: 11,
-		DecodeErrors: 12, NegativeHits: 17, LockWaits: 18, PublishErrors: 19, Evictions: 13, Expirations: 14, Entries: 15, Bytes: 16, Breaker: "half-open",
+		StaleOnError: 20, DecodeErrors: 12, NegativeHits: 17, LockWaits: 18, PublishErrors: 19, Evictions: 13, Expirations: 14, Entries: 15, Bytes: 16, Breaker: "half-open",
 	}
 }
 
@@ -87,6 +87,9 @@ cachex_publish_errors_total 19
 # HELP cachex_stale_served_total Stale values served.
 # TYPE cachex_stale_served_total counter
 cachex_stale_served_total 10
+# HELP cachex_stale_on_error_total Stale values served because the loader failed.
+# TYPE cachex_stale_on_error_total counter
+cachex_stale_on_error_total 20
 `
 	if err := testutil.CollectAndCompare(c, strings.NewReader(want)); err != nil {
 		t.Fatal(err)
@@ -139,8 +142,8 @@ cachex_breaker_state{state="open"} 0
 }
 
 func TestMetricCount(t *testing.T) {
-	if n := testutil.CollectAndCount(NewCollector(&fakeSource{})); n != 22 {
-		t.Fatalf("got %d series, want 22", n)
+	if n := testutil.CollectAndCount(NewCollector(&fakeSource{})); n != 23 {
+		t.Fatalf("got %d series, want 23", n)
 	}
 }
 

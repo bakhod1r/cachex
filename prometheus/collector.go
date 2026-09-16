@@ -49,6 +49,7 @@ var metrics = []metric{
 	{"load_errors_total", "Loader invocations that returned an error.", prometheus.CounterValue, nil, nil, func(s cachex.Stats) float64 { return float64(s.LoadErrors) }},
 	{"loads_shared_total", "Callers deduplicated by single-flight.", prometheus.CounterValue, nil, nil, func(s cachex.Stats) float64 { return float64(s.LoadsShared) }},
 	{"stale_served_total", "Stale values served.", prometheus.CounterValue, nil, nil, func(s cachex.Stats) float64 { return float64(s.StaleServed) }},
+	{"stale_on_error_total", "Stale values served because the loader failed.", prometheus.CounterValue, nil, nil, func(s cachex.Stats) float64 { return float64(s.StaleOnError) }},
 	{"early_refreshes_total", "Early (probabilistic) refreshes triggered.", prometheus.CounterValue, nil, nil, func(s cachex.Stats) float64 { return float64(s.EarlyRefreshes) }},
 	{"decode_errors_total", "Values that failed to decode.", prometheus.CounterValue, nil, nil, func(s cachex.Stats) float64 { return float64(s.DecodeErrors) }},
 	{"negative_hits_total", "Lookups answered by a cached not-found.", prometheus.CounterValue, nil, nil, func(s cachex.Stats) float64 { return float64(s.NegativeHits) }},
