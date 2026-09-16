@@ -168,6 +168,9 @@ counter in L2 (`cachex:ns:<name>:v`) and frees this process's L1 copies immediat
 version is unknown (L2 down, never fetched), `Get` misses, `Set` returns the error and
 `GetOrLoad` calls the loader without caching.
 
+`GetView`, `GetMulti`, `SetMulti` and `GetOrLoadMulti` work the same way inside a namespace;
+loaders and returned maps always use your keys, not the internal `<name>:<version>:<key>` form.
+
 ## Stats
 
 ```go

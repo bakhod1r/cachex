@@ -83,6 +83,106 @@ func (n *Namespace) GetOrLoad(ctx context.Context, key string, ttl time.Duration
 	return n.c.GetOrLoad(ctx, k, ttl, load)
 }
 
+// GetView is Cache.GetView inside the namespace: fn sees the value without a copy and must
+// not retain it. An unknown version (L2 down, never seen) is a miss.
+func (n *Namespace) GetView(ctx context.Context, key string, fn func(val []byte) error) error {
+	k, err := n.key(ctx, key)
+	if err != nil {
+		return ErrMiss
+	}
+	return n.c.GetView(ctx, k, fn)
+}
+
+// GetMulti reads keys in the namespace; absent keys are omitted. An unknown version
+// (L2 down, never seen) reports every key as absent.
+func (n *Namespace) GetMulti(ctx context.Context, keys []string) (map[string][]byte, error) {
+	inner, back, _, err := n.keys(ctx, keys)
+	if err != nil {
+		return map[string][]byte{}, nil
+	}
+	got, err := n.c.GetMulti(ctx, inner)
+	if err != nil {
+		return nil, err
+	}
+	return unprefix(got, back), nil
+}
+
+// SetMulti writes items in the namespace. When the version can't be read (L2 down and
+// never fetched) nothing is written and the error is returned.
+func (n *Namespace) SetMulti(ctx context.Context, items map[string][]byte, ttl time.Duration) error {
+	inner := make(map[string][]byte, len(items))
+	for k, v := range items {
+		ik, err := n.key(ctx, k)
+		if err != nil {
+			return err
+		}
+		inner[ik] = v
+	}
+	return n.c.SetMulti(ctx, inner, ttl)
+}
+
+// GetOrLoadMulti is Cache.GetOrLoadMulti inside the namespace; load always sees the caller's
+// keys. If the version is unknown the loader runs without caching, so callers still get values.
+func (n *Namespace) GetOrLoadMulti(ctx context.Context, keys []string, ttl time.Duration, load MultiLoader) (map[string][]byte, error) {
+	if load == nil {
+		return nil, errors.New("cachex: nil multi-loader")
+	}
+	inner, back, prefix, err := n.keys(ctx, keys)
+	if err != nil {
+		return load(ctx, keys)
+	}
+	got, err := n.c.GetOrLoadMulti(ctx, inner, ttl, func(ctx context.Context, missing []string) (map[string][]byte, error) {
+		outer := make([]string, 0, len(missing))
+		for _, ik := range missing {
+			outer = append(outer, back[ik])
+		}
+		loaded, err := load(ctx, outer)
+		if err != nil {
+			return nil, err
+		}
+		out := make(map[string][]byte, len(loaded))
+		for k, v := range loaded {
+			out[prefix+k] = v // same version as inner: keys() read it once
+		}
+		return out, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return unprefix(got, back), nil
+}
+
+// keys maps caller keys to namespaced ones and back. It reads the version once, so every
+// key in one call shares it.
+func (n *Namespace) keys(ctx context.Context, keys []string) ([]string, map[string]string, string, error) {
+	v, err := n.version(ctx)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	prefix := n.name + ":" + strconv.FormatUint(v, 10) + ":"
+	inner := make([]string, 0, len(keys))
+	back := make(map[string]string, len(keys))
+	for _, k := range keys {
+		if k == "" {
+			return nil, nil, "", ErrInvalidKey
+		}
+		inner = append(inner, prefix+k)
+		back[prefix+k] = k
+	}
+	return inner, back, prefix, nil
+}
+
+// unprefix renames namespaced keys back to the caller's names, dropping unknown ones.
+func unprefix(got map[string][]byte, back map[string]string) map[string][]byte {
+	out := make(map[string][]byte, len(got))
+	for ik, v := range got {
+		if k, ok := back[ik]; ok {
+			out[k] = v
+		}
+	}
+	return out
+}
+
 // Invalidate makes every key in the namespace unreachable on all nodes by bumping the version.
 // Old entries age out of both tiers; this process also frees its L1 copies at once.
 func (n *Namespace) Invalidate(ctx context.Context) error {

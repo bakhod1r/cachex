@@ -65,7 +65,7 @@ type Invalidator interface {
 	Subscribe(ctx context.Context, fn func(Invalidation)) error
 }
 
-// Store is the shared L2 tier (memcached in production, an in-memory fake in tests).
+// Store is the shared L2 tier (memcached or Redis in production, an in-memory fake in tests).
 // Values are opaque encoded envelopes. Implementations must be safe for concurrent use.
 type Store interface {
 	// Get returns ErrMiss when the key is absent.
