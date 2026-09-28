@@ -446,7 +446,16 @@ func (c *Cache) publish(ctx context.Context, msg Invalidation) {
 	if c.cfg.invalidator == nil {
 		return
 	}
-	if err := c.cfg.invalidator.Publish(context.WithoutCancel(ctx), msg); err != nil {
+	// Detach from the caller's cancellation (the local delete already happened
+	// and peers must hear about it) but keep a deadline, so a stuck broker
+	// cannot block the caller forever.
+	to := c.cfg.publishTO
+	if to <= 0 {
+		to = c.cfg.loadTimeout
+	}
+	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), to)
+	defer cancel()
+	if err := c.cfg.invalidator.Publish(pctx, msg); err != nil {
 		c.st.publishErrors.Add(1)
 		if f := c.cfg.events.PublishError; f != nil {
 			f(msg, err)

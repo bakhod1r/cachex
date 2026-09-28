@@ -27,7 +27,8 @@ type config struct {
 	lockPoll      time.Duration
 	markerTTL     time.Duration // 0 = 2 * loadTimeout
 	invalidator   Invalidator
-	compressor    Compressor // nil: L2 writes stay raw
+	publishTO     time.Duration // 0 = loadTimeout
+	compressor    Compressor    // nil: L2 writes stay raw
 	compressMin   int
 	decompressors map[byte]Compressor
 	events        Events
@@ -235,6 +236,15 @@ func WithInvalidator(inv Invalidator) Option {
 		c.invalidator = inv
 		return nil
 	}
+}
+
+// WithPublishTimeout bounds how long Delete and Namespace.Invalidate wait for the
+// invalidator to accept a broadcast (default: the load timeout). Broker clients
+// such as franz-go retry until their context ends, so without a bound an
+// unreachable broker would block every Delete. A publish that times out is
+// reported through Events.PublishError; the local delete has already happened.
+func WithPublishTimeout(d time.Duration) Option {
+	return positive("publish timeout", d, func(c *config) { c.publishTO = d })
 }
 
 // WithEvents installs hooks for logging, metrics and tracing. Combine several with MergeEvents.

@@ -367,6 +367,7 @@ bounds still apply.
 | `WithDeleteMarkerTTL(d)` | `2 x load timeout` | L2 Delete marker lifetime (`CASStore` only); must exceed load timeout |
 | `WithDistributedLock(ttl, poll)` | off | One loader per key across processes |
 | `WithInvalidator(Invalidator)` | none | Broadcast invalidations between processes |
+| `WithPublishTimeout(d)` | load timeout | Max wait for a broadcast; a stuck broker no longer blocks `Delete` |
 | `WithCompression(Compressor, minSize)` | off | Compress L2 values `>= minSize` bytes |
 | `WithDecompressors(Compressor...)` | none | Decode compressed L2 entries without compressing |
 | `WithClock(Clock)` | wall clock | Injectable clock for tests |
