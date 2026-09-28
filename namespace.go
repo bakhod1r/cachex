@@ -312,17 +312,29 @@ func (vs *versions) get(ns string) (versionEntry, bool) {
 	return e, ok
 }
 
+// forget marks the cached version stale so the next use refetches it. The
+// value is kept as a floor: a fetch that read the counter before the change
+// and lands after it must not take the version back.
 func (vs *versions) forget(ns string) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
-	delete(vs.m, ns)
+	if e, ok := vs.m[ns]; ok {
+		e.fetched = time.Time{}
+		vs.m[ns] = e
+	}
 }
 
+// put records a version. Versions only move forward: a slow fetch that read
+// v=5 before an Invalidate stored 6 would otherwise put 5 back and serve the
+// invalidated keys again until versionTTL passed.
 func (vs *versions) put(ns string, v uint64, at time.Time) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 	if vs.m == nil {
 		vs.m = make(map[string]versionEntry)
+	}
+	if cur, ok := vs.m[ns]; ok && cur.v > v {
+		v = cur.v
 	}
 	vs.m[ns] = versionEntry{v: v, fetched: at}
 }

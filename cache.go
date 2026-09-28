@@ -898,11 +898,15 @@ func (c *Cache) check(key string) error {
 	return nil
 }
 
+// maxTTL caps a TTL well below the point where now+ttl (in nanoseconds)
+// overflows int64; past it an entry was stored already expired.
+const maxTTL = 100 * 365 * 24 * time.Hour
+
 func (c *Cache) ttl(ttl time.Duration) time.Duration {
 	if ttl <= 0 {
 		return c.cfg.defaultTTL
 	}
-	return ttl
+	return min(ttl, maxTTL)
 }
 
 func (c *Cache) nowNs() int64 {
