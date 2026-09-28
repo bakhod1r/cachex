@@ -1,6 +1,6 @@
 module github.com/bakhod1r/cachex/prometheus
 
-go 1.25.3
+go 1.25.0
 
 require (
 	github.com/bakhod1r/cachex v0.1.0
